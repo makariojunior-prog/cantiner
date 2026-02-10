@@ -3,9 +3,10 @@
 // =======================================================
 const ID_PLANILHA_COMERCIAL = '15ygrVoRh7cd8iVWn0eBXpEz-jBVsOa4jxemmmva2rnA';
 const ABA_DESTINO = 'TESTE';
-const ABA_RECEPCAO = 'recepcao'; // ⚠️ Ajuste para o nome exato da aba da Recepção
+const ABA_RECEPCAO = 'recepcao';
 
 const IDS_IGNORADOS = ['1013314', '1013311', '1058077', '1198553'];
+const COLUNAS_FORMULAS = [6, 7, 8, 9, 12];
 
 // =======================================================
 // GATILHO PRINCIPAL — Executa ao editar a Recepção
@@ -43,9 +44,11 @@ function onEditRecepcao(e) {
     var linhaExistente = buscarLinhaPorIdVenda(sheetTeste, idVenda);
 
     if (linhaExistente) {
+      // Atualização — SEM reescrever fórmulas
       atualizarLinha(sheetTeste, linhaExistente, venda, idCliente, valor, dataAtuali);
       Logger.log('✏️ Pedido atualizado — id_venda: ' + idVenda + ' | Linha: ' + linhaExistente);
     } else {
+      // Inserção — COM fórmulas pois a linha é nova
       inserirLinha(sheetTeste, idVenda, venda, idCliente, valor, dataAtuali);
       Logger.log('➕ Novo pedido inserido — id_venda: ' + idVenda);
     }
@@ -56,13 +59,13 @@ function onEditRecepcao(e) {
 }
 
 // =======================================================
-// BUSCA linha na TESTE pelo id_venda (Coluna A)
+// BUSCA linha na TESTE pelo id_venda (Coluna B)
 // =======================================================
 function buscarLinhaPorIdVenda(sheet, idVenda) {
   var ultimaLinha = sheet.getLastRow();
   if (ultimaLinha < 2) return null;
 
-  var ids = sheet.getRange(2, 1, ultimaLinha - 1, 1).getValues();
+  var ids = sheet.getRange(2, 2, ultimaLinha - 1, 1).getValues();
   for (var i = 0; i < ids.length; i++) {
     if (String(ids[i][0]).trim() === idVenda) return i + 2;
   }
@@ -70,65 +73,59 @@ function buscarLinhaPorIdVenda(sheet, idVenda) {
 }
 
 // =======================================================
-// INSERE nova linha na TESTE
+// INSERE nova linha na TESTE — com fórmulas
 // =======================================================
 function inserirLinha(sheet, idVenda, venda, idCliente, valor, dataAtuali) {
-  var novaLinha = proximaLinhaVaziaColA(sheet);
+  var novaLinha = proximaLinhaVaziaColB(sheet);
 
-  sheet.getRange(novaLinha, 1).setValue(idVenda);
-  sheet.getRange(novaLinha, 2).setValue(venda);
-  sheet.getRange(novaLinha, 3).setValue(converterParaNumero(idCliente));
-  sheet.getRange(novaLinha, 4).setValue(converterValor(valor));
-  sheet.getRange(novaLinha, 14).setValue(dataAtuali);
+  sheet.getRange(novaLinha, 2, 1, 4).setValues([
+    [idVenda, venda, converterParaNumero(idCliente), converterValor(valor)]
+  ]);
+  sheet.getRange(novaLinha, 15).setValue(dataAtuali);
 
-  preencherFormulas(sheet, novaLinha);
+  copiarFormulas(sheet, novaLinha); // Só em linhas novas
 }
 
 // =======================================================
-// ATUALIZA linha existente na TESTE
+// ATUALIZA linha existente — SEM reescrever fórmulas
 // =======================================================
 function atualizarLinha(sheet, linha, venda, idCliente, valor, dataAtuali) {
-  sheet.getRange(linha, 2).setValue(venda);
-  sheet.getRange(linha, 3).setValue(converterParaNumero(idCliente));
-  sheet.getRange(linha, 4).setValue(converterValor(valor));
-  sheet.getRange(linha, 14).setValue(dataAtuali);
-
-  preencherFormulas(sheet, linha);
+  sheet.getRange(linha, 3, 1, 3).setValues([
+    [venda, converterParaNumero(idCliente), converterValor(valor)]
+  ]);
+  sheet.getRange(linha, 15).setValue(dataAtuali);
+  // ❌ copiarFormulas removido — fórmulas já existem na linha
 }
 
 // =======================================================
-// INSERE FÓRMULAS nas colunas E, F, G, H e K
+// COPIA fórmulas da linha 2 — apenas para linhas NOVAS
+// Verifica se já existe fórmula antes de copiar
 // =======================================================
-function preencherFormulas(sheet, linha) {
-  var l = linha;
+function copiarFormulas(sheet, linhaDestino) {
+  if (linhaDestino === 2) return;
 
-  sheet.getRange(l, 5).setFormula(
-    "=IFERROR(VLOOKUP(C" + l + ",'CLIENTES LUMAR'!$A$2:$V$1500,2,FALSE),\"\")"
-  );
-  sheet.getRange(l, 6).setFormula(
-    "=IFERROR(VLOOKUP(C" + l + ",'CLIENTES LUMAR'!$A$2:$V$1500,5,FALSE),\"\")"
-  );
-  sheet.getRange(l, 7).setFormula(
-    "=IFERROR(VLOOKUP(C" + l + ",'CLIENTES LUMAR'!$A$2:$V$1500,6,FALSE),\"\")"
-  );
-  sheet.getRange(l, 8).setFormula(
-    "=IFERROR(VLOOKUP(C" + l + ",'CLIENTES LUMAR'!$A$2:$V$1500,7,FALSE),\"\")"
-  );
-  sheet.getRange(l, 11).setFormula(
-    "=IFERROR(VLOOKUP(C" + l + ",'CLIENTES LUMAR'!$A$2:$V$1500,9,FALSE),\"\")"
-  );
+  for (var i = 0; i < COLUNAS_FORMULAS.length; i++) {
+    var col     = COLUNAS_FORMULAS[i];
+    var origem  = sheet.getRange(2, col);
+    var destino = sheet.getRange(linhaDestino, col);
+
+    // Só copia se a origem tem fórmula E o destino ainda está vazio
+    if (origem.getFormula() !== '' && destino.getFormula() === '') {
+      origem.copyTo(destino, SpreadsheetApp.CopyPasteType.PASTE_FORMULA, false);
+    }
+  }
 }
 
 // =======================================================
-// AUXILIAR — Próxima linha vazia pela Coluna A
+// AUXILIAR — Próxima linha vazia pela Coluna B
 // =======================================================
-function proximaLinhaVaziaColA(sheet) {
+function proximaLinhaVaziaColB(sheet) {
   var ultimaLinha = sheet.getLastRow();
   if (ultimaLinha < 2) return 2;
 
-  var valoresColA = sheet.getRange(2, 1, ultimaLinha, 1).getValues();
-  for (var i = 0; i < valoresColA.length; i++) {
-    if (valoresColA[i][0] === '' || valoresColA[i][0] === null) return i + 2;
+  var valoresColB = sheet.getRange(2, 2, ultimaLinha, 1).getValues();
+  for (var i = 0; i < valoresColB.length; i++) {
+    if (valoresColB[i][0] === '' || valoresColB[i][0] === null) return i + 2;
   }
   return ultimaLinha + 1;
 }
@@ -150,7 +147,6 @@ function converterValor(valor) {
   if (typeof valor === 'number') return valor;
 
   var str = String(valor).trim().replace(/R\$\s?/g, '').trim();
-
   if (str.includes(',')) {
     str = str.replace(/\./g, '').replace(',', '.');
   }
@@ -179,10 +175,10 @@ function criarGatilhoRecepcao() {
 }
 
 // =======================================================
-// SINCRONIZAÇÃO COMPLETA — Importa todos os dados históricos
+// SINCRONIZAÇÃO EM LOTES — Otimizada
 // =======================================================
 function sincronizacaoCompleta() {
-  Logger.log('🔄 Iniciando sincronização completa...');
+  Logger.log('🔄 Iniciando sincronização otimizada...');
 
   var ssRecepcao  = SpreadsheetApp.getActiveSpreadsheet();
   var sheetRecep  = ssRecepcao.getSheetByName(ABA_RECEPCAO);
@@ -192,42 +188,81 @@ function sincronizacaoCompleta() {
   if (!sheetRecep) { Logger.log('❌ Aba Recepção não encontrada!'); return; }
   if (!sheetTeste) { Logger.log('❌ Aba TESTE não encontrada!'); return; }
 
-  var ultimaLinha = sheetRecep.getLastRow();
-  if (ultimaLinha < 2) { Logger.log('⚠️ Sem dados na Recepção.'); return; }
+  var ultimaRecepcao = sheetRecep.getLastRow();
+  if (ultimaRecepcao < 2) { Logger.log('⚠️ Sem dados na Recepção.'); return; }
 
-  var dados = sheetRecep.getRange(2, 1, ultimaLinha - 1, 8).getValues();
+  // 1. LÊ TUDO DE UMA VEZ
+  var dadosRecepcao = sheetRecep.getRange(2, 1, ultimaRecepcao - 1, 8).getValues();
 
-  var inseridos   = 0;
-  var atualizados = 0;
-  var ignorados   = 0;
+  // 2. MONTA MAPA DE IDs JÁ EXISTENTES NA TESTE
+  var ultimaTeste = sheetTeste.getLastRow();
+  var mapaIdsExistentes = {};
+  if (ultimaTeste >= 2) {
+    var idsExistentes = sheetTeste.getRange(2, 2, ultimaTeste - 1, 1).getValues();
+    for (var x = 0; x < idsExistentes.length; x++) {
+      var id = String(idsExistentes[x][0]).trim();
+      if (id !== '') mapaIdsExistentes[id] = x + 2;
+    }
+  }
 
-  for (var i = 0; i < dados.length; i++) {
-    var idVenda    = String(dados[i][0]).trim();
-    var venda      = dados[i][1];
-    var idCliente  = String(dados[i][2]).trim();
-    var valor      = dados[i][4];
-    var dataAtuali = dados[i][7];
+  // 3. SEPARA NOVOS E ATUALIZAÇÕES
+  var novosParaInserir    = [];
+  var linhasParaAtualizar = [];
+  var ignorados = 0;
+
+  for (var i = 0; i < dadosRecepcao.length; i++) {
+    var idVenda   = String(dadosRecepcao[i][0]).trim();
+    var idCliente = String(dadosRecepcao[i][2]).trim();
 
     if (!idVenda || idVenda === '') continue;
+    if (IDS_IGNORADOS.includes(idCliente)) { ignorados++; continue; }
 
-    if (IDS_IGNORADOS.includes(idCliente)) {
-      ignorados++;
-      continue;
-    }
+    var registro = {
+      idVenda    : idVenda,
+      venda      : dadosRecepcao[i][1],
+      idCliente  : converterParaNumero(idCliente),
+      valor      : converterValor(dadosRecepcao[i][4]),
+      dataAtuali : dadosRecepcao[i][7]
+    };
 
-    var linhaExistente = buscarLinhaPorIdVenda(sheetTeste, idVenda);
-
-    if (linhaExistente) {
-      atualizarLinha(sheetTeste, linhaExistente, venda, idCliente, valor, dataAtuali);
-      atualizados++;
+    if (mapaIdsExistentes[idVenda]) {
+      registro.linha = mapaIdsExistentes[idVenda];
+      linhasParaAtualizar.push(registro);
     } else {
-      inserirLinha(sheetTeste, idVenda, venda, idCliente, valor, dataAtuali);
-      inseridos++;
+      novosParaInserir.push(registro);
+    }
+  }
+
+  Logger.log('📊 Para inserir: '   + novosParaInserir.length);
+  Logger.log('📊 Para atualizar: ' + linhasParaAtualizar.length);
+  Logger.log('📊 Ignorados: '      + ignorados);
+
+  // 4. ATUALIZA EXISTENTES — SEM fórmulas, apenas dados
+  for (var u = 0; u < linhasParaAtualizar.length; u++) {
+    var r = linhasParaAtualizar[u];
+    sheetTeste.getRange(r.linha, 3, 1, 3).setValues([[r.venda, r.idCliente, r.valor]]);
+    sheetTeste.getRange(r.linha, 15).setValue(r.dataAtuali);
+    // ❌ Sem copiarFormulas — fórmulas já existem
+  }
+
+  // 5. INSERE NOVOS — COM fórmulas pois as linhas são novas
+  if (novosParaInserir.length > 0) {
+    var proximaLinha = proximaLinhaVaziaColB(sheetTeste);
+
+    for (var n = 0; n < novosParaInserir.length; n++) {
+      var novo       = novosParaInserir[n];
+      var linhaAtual = proximaLinha + n;
+
+      sheetTeste.getRange(linhaAtual, 2, 1, 4).setValues([
+        [novo.idVenda, novo.venda, novo.idCliente, novo.valor]
+      ]);
+      sheetTeste.getRange(linhaAtual, 15).setValue(novo.dataAtuali);
+      copiarFormulas(sheetTeste, linhaAtual); // Só para linhas novas
     }
   }
 
   Logger.log('✅ Sincronização concluída!');
-  Logger.log('   ➕ Inseridos: '   + inseridos);
-  Logger.log('   ✏️ Atualizados: ' + atualizados);
+  Logger.log('   ➕ Inseridos: '   + novosParaInserir.length);
+  Logger.log('   ✏️ Atualizados: ' + linhasParaAtualizar.length);
   Logger.log('   ⏭️ Ignorados: '   + ignorados);
 }
