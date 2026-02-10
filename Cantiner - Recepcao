@@ -1,0 +1,233 @@
+// =======================================================
+// CONFIGURAÇÕES
+// =======================================================
+const ID_PLANILHA_COMERCIAL = '15ygrVoRh7cd8iVWn0eBXpEz-jBVsOa4jxemmmva2rnA';
+const ABA_DESTINO = 'TESTE';
+const ABA_RECEPCAO = 'recepcao'; // ⚠️ Ajuste para o nome exato da aba da Recepção
+
+const IDS_IGNORADOS = ['1013314', '1013311', '1058077', '1198553'];
+
+// =======================================================
+// GATILHO PRINCIPAL — Executa ao editar a Recepção
+// =======================================================
+function onEditRecepcao(e) {
+  try {
+    var sheet = e.range.getSheet();
+    if (sheet.getName() !== ABA_RECEPCAO) return;
+
+    var linha = e.range.getRow();
+    if (linha < 2) return;
+
+    var dados = sheet.getRange(linha, 1, 1, 8).getValues()[0];
+
+    var idVenda    = String(dados[0]).trim();
+    var venda      = dados[1];
+    var idCliente  = String(dados[2]).trim();
+    var valor      = dados[4];
+    var dataAtuali = dados[7];
+
+    if (!idVenda || idVenda === '') return;
+    if (IDS_IGNORADOS.includes(idCliente)) {
+      Logger.log('⏭️ id_cliente ignorado: ' + idCliente);
+      return;
+    }
+
+    var ssComercial = SpreadsheetApp.openById(ID_PLANILHA_COMERCIAL);
+    var sheetTeste  = ssComercial.getSheetByName(ABA_DESTINO);
+
+    if (!sheetTeste) {
+      Logger.log('❌ Aba "' + ABA_DESTINO + '" não encontrada!');
+      return;
+    }
+
+    var linhaExistente = buscarLinhaPorIdVenda(sheetTeste, idVenda);
+
+    if (linhaExistente) {
+      atualizarLinha(sheetTeste, linhaExistente, venda, idCliente, valor, dataAtuali);
+      Logger.log('✏️ Pedido atualizado — id_venda: ' + idVenda + ' | Linha: ' + linhaExistente);
+    } else {
+      inserirLinha(sheetTeste, idVenda, venda, idCliente, valor, dataAtuali);
+      Logger.log('➕ Novo pedido inserido — id_venda: ' + idVenda);
+    }
+
+  } catch(err) {
+    Logger.log('❌ ERRO em onEditRecepcao: ' + err.toString());
+  }
+}
+
+// =======================================================
+// BUSCA linha na TESTE pelo id_venda (Coluna A)
+// =======================================================
+function buscarLinhaPorIdVenda(sheet, idVenda) {
+  var ultimaLinha = sheet.getLastRow();
+  if (ultimaLinha < 2) return null;
+
+  var ids = sheet.getRange(2, 1, ultimaLinha - 1, 1).getValues();
+  for (var i = 0; i < ids.length; i++) {
+    if (String(ids[i][0]).trim() === idVenda) return i + 2;
+  }
+  return null;
+}
+
+// =======================================================
+// INSERE nova linha na TESTE
+// =======================================================
+function inserirLinha(sheet, idVenda, venda, idCliente, valor, dataAtuali) {
+  var novaLinha = proximaLinhaVaziaColA(sheet);
+
+  sheet.getRange(novaLinha, 1).setValue(idVenda);
+  sheet.getRange(novaLinha, 2).setValue(venda);
+  sheet.getRange(novaLinha, 3).setValue(converterParaNumero(idCliente));
+  sheet.getRange(novaLinha, 4).setValue(converterValor(valor));
+  sheet.getRange(novaLinha, 14).setValue(dataAtuali);
+
+  preencherFormulas(sheet, novaLinha);
+}
+
+// =======================================================
+// ATUALIZA linha existente na TESTE
+// =======================================================
+function atualizarLinha(sheet, linha, venda, idCliente, valor, dataAtuali) {
+  sheet.getRange(linha, 2).setValue(venda);
+  sheet.getRange(linha, 3).setValue(converterParaNumero(idCliente));
+  sheet.getRange(linha, 4).setValue(converterValor(valor));
+  sheet.getRange(linha, 14).setValue(dataAtuali);
+
+  preencherFormulas(sheet, linha);
+}
+
+// =======================================================
+// INSERE FÓRMULAS nas colunas E, F, G, H e K
+// =======================================================
+function preencherFormulas(sheet, linha) {
+  var l = linha;
+
+  sheet.getRange(l, 5).setFormula(
+    "=IFERROR(VLOOKUP(C" + l + ",'CLIENTES LUMAR'!$A$2:$V$1500,2,FALSE),\"\")"
+  );
+  sheet.getRange(l, 6).setFormula(
+    "=IFERROR(VLOOKUP(C" + l + ",'CLIENTES LUMAR'!$A$2:$V$1500,5,FALSE),\"\")"
+  );
+  sheet.getRange(l, 7).setFormula(
+    "=IFERROR(VLOOKUP(C" + l + ",'CLIENTES LUMAR'!$A$2:$V$1500,6,FALSE),\"\")"
+  );
+  sheet.getRange(l, 8).setFormula(
+    "=IFERROR(VLOOKUP(C" + l + ",'CLIENTES LUMAR'!$A$2:$V$1500,7,FALSE),\"\")"
+  );
+  sheet.getRange(l, 11).setFormula(
+    "=IFERROR(VLOOKUP(C" + l + ",'CLIENTES LUMAR'!$A$2:$V$1500,9,FALSE),\"\")"
+  );
+}
+
+// =======================================================
+// AUXILIAR — Próxima linha vazia pela Coluna A
+// =======================================================
+function proximaLinhaVaziaColA(sheet) {
+  var ultimaLinha = sheet.getLastRow();
+  if (ultimaLinha < 2) return 2;
+
+  var valoresColA = sheet.getRange(2, 1, ultimaLinha, 1).getValues();
+  for (var i = 0; i < valoresColA.length; i++) {
+    if (valoresColA[i][0] === '' || valoresColA[i][0] === null) return i + 2;
+  }
+  return ultimaLinha + 1;
+}
+
+// =======================================================
+// AUXILIAR — Converte texto para número inteiro
+// =======================================================
+function converterParaNumero(valor) {
+  if (valor === null || valor === '') return '';
+  var num = Number(String(valor).trim());
+  return isNaN(num) ? valor : num;
+}
+
+// =======================================================
+// AUXILIAR — Converte valor monetário para número
+// =======================================================
+function converterValor(valor) {
+  if (valor === null || valor === '') return '';
+  if (typeof valor === 'number') return valor;
+
+  var str = String(valor).trim().replace(/R\$\s?/g, '').trim();
+
+  if (str.includes(',')) {
+    str = str.replace(/\./g, '').replace(',', '.');
+  }
+
+  var numero = parseFloat(str);
+  return isNaN(numero) ? valor : numero;
+}
+
+// =======================================================
+// CRIAR GATILHO — Execute UMA VEZ para instalar o trigger
+// =======================================================
+function criarGatilhoRecepcao() {
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'onEditRecepcao') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+
+  ScriptApp.newTrigger('onEditRecepcao')
+    .forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet())
+    .onEdit()
+    .create();
+
+  Logger.log('✅ Gatilho criado com sucesso!');
+}
+
+// =======================================================
+// SINCRONIZAÇÃO COMPLETA — Importa todos os dados históricos
+// =======================================================
+function sincronizacaoCompleta() {
+  Logger.log('🔄 Iniciando sincronização completa...');
+
+  var ssRecepcao  = SpreadsheetApp.getActiveSpreadsheet();
+  var sheetRecep  = ssRecepcao.getSheetByName(ABA_RECEPCAO);
+  var ssComercial = SpreadsheetApp.openById(ID_PLANILHA_COMERCIAL);
+  var sheetTeste  = ssComercial.getSheetByName(ABA_DESTINO);
+
+  if (!sheetRecep) { Logger.log('❌ Aba Recepção não encontrada!'); return; }
+  if (!sheetTeste) { Logger.log('❌ Aba TESTE não encontrada!'); return; }
+
+  var ultimaLinha = sheetRecep.getLastRow();
+  if (ultimaLinha < 2) { Logger.log('⚠️ Sem dados na Recepção.'); return; }
+
+  var dados = sheetRecep.getRange(2, 1, ultimaLinha - 1, 8).getValues();
+
+  var inseridos   = 0;
+  var atualizados = 0;
+  var ignorados   = 0;
+
+  for (var i = 0; i < dados.length; i++) {
+    var idVenda    = String(dados[i][0]).trim();
+    var venda      = dados[i][1];
+    var idCliente  = String(dados[i][2]).trim();
+    var valor      = dados[i][4];
+    var dataAtuali = dados[i][7];
+
+    if (!idVenda || idVenda === '') continue;
+
+    if (IDS_IGNORADOS.includes(idCliente)) {
+      ignorados++;
+      continue;
+    }
+
+    var linhaExistente = buscarLinhaPorIdVenda(sheetTeste, idVenda);
+
+    if (linhaExistente) {
+      atualizarLinha(sheetTeste, linhaExistente, venda, idCliente, valor, dataAtuali);
+      atualizados++;
+    } else {
+      inserirLinha(sheetTeste, idVenda, venda, idCliente, valor, dataAtuali);
+      inseridos++;
+    }
+  }
+
+  Logger.log('✅ Sincronização concluída!');
+  Logger.log('   ➕ Inseridos: '   + inseridos);
+  Logger.log('   ✏️ Atualizados: ' + atualizados);
+  Logger.log('   ⏭️ Ignorados: '   + ignorados);
+}
