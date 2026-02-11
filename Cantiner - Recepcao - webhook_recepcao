@@ -1,0 +1,63 @@
+function doPost(e) {
+  try {
+    var ss = SpreadsheetApp.openById("1Z4vrdU_1zSzs9Bl6SrPVOiCnlWFdK5b0oP7aYnuMRNY");
+    var sheet = ss.getSheetByName("recepcao");
+
+    if (!sheet) throw new Error("Aba 'recepcao' não encontrada");
+
+    var data = JSON.parse(e.postData.contents);
+    var id = data.id_venda;
+
+    var rows = [
+      id || null,
+      data.venda || null,
+      data.id_cliente || null,
+      data.cliente || null,
+      data.valor || null,
+      data.cidade || null,
+      data.data_emissao ? new Date(data.data_emissao) : null,
+      data.data_atualizacao ? new Date(data.data_atualizacao) : null
+    ];
+
+   
+    var lock = LockService.getScriptLock();
+    lock.waitLock(10000); 
+
+    var wasUpdated = updateExistingSale(id, sheet, rows);
+    
+    if (!wasUpdated) {
+      sheet.appendRow(rows); 
+    }
+
+    lock.releaseLock();
+
+    return ContentService.createTextOutput(JSON.stringify({ "status": "success", "message": "Venda processada" }))
+                         .setMimeType(ContentService.MimeType.JSON);
+
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ "status": "error", "message": err.message }))
+                         .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function updateExistingSale(id, sheet, rows) {
+  var lastRow = sheet.getLastRow();
+  var lastColumn = sheet.getLastColumn();
+  
+  if (lastRow < 2 || lastColumn === 0) return false;
+
+  var dataRange = sheet.getRange(1, 1, lastRow, lastColumn).getValues();
+  var headerRow = dataRange[0];
+  var colIndex = headerRow.indexOf("id_venda");
+
+  if (colIndex === -1) throw new Error("Coluna id_venda não encontrada.");
+
+  for (var i = 1; i < dataRange.length; i++) {
+    if (dataRange[i][colIndex] == id) {
+      sheet.getRange(i + 1, 1, 1, rows.length).setValues([rows]);
+      return true;
+    }
+  }
+  
+  return false;
+}
