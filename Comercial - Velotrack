@@ -1,0 +1,226 @@
+/**
+ * 🏍️ SISTEMA CENTRAL DA FROTA (CANTINA & LUMAR) - VERSÃO DE OPERAÇÃO
+ * Leitura de dados Velotrack (Fence + Interest Point)
+ */
+
+// --- 1. CONFIGURAÇÕES E CREDENCIAIS ---
+const VELO_USER = 'integracao@gmail.com'; 
+const VELO_PASS = '!Cantina26012019';    
+const VELO_BASE_URL = 'https://track.velotrack.com.br/api/index.php';
+
+/**
+ * --- 2. GERENCIAMENTO DE SESSÃO (CACHE INTELIGENTE) ---
+ * Verifica se já tem token salvo. Se não, faz login.
+ */
+function obterSessaoVelotrack(forcarRenovacao = false) {
+  const props = PropertiesService.getScriptProperties();
+  const cache = props.getProperties();
+
+  // Se tem cache e não estamos forçando renovação, retorna o cache
+  if (!forcarRenovacao && cache.VELO_UID && cache.VELO_CUSTOMER) {
+    return {
+      uid: cache.VELO_UID,
+      idcustomer: cache.VELO_CUSTOMER,
+      browser: cache.VELO_BROWSER
+    };
+  }
+
+  // Se não tem cache, faz login
+  console.log("🔄 Realizando novo login na API...");
+  return realizarLoginAPI();
+}
+
+function realizarLoginAPI() {
+  const timestamp = new Date().getTime();
+  const senhaMd5 = MD5(VELO_PASS);
+  const stringHash = `${VELO_USER}:${senhaMd5}:${timestamp}`;
+  const tokenSessao = MD5(stringHash);
+
+  const payload = {
+    "desc_uid": tokenSessao,
+    "desc_useragent": "GoogleSheets-FrotaBot", // Identificador fixo
+    "desc_data": timestamp
+  };
+
+  const options = {
+    'method': 'post',
+    'contentType': 'application/json',
+    'payload': JSON.stringify(payload),
+    'muteHttpExceptions': true
+  };
+
+  try {
+    const response = UrlFetchApp.fetch(`${VELO_BASE_URL}/login`, options);
+    const json = JSON.parse(response.getContentText());
+
+    if (json.desc_uid_retorno) {
+      // ✅ Sucesso: Salva no Cache do Script
+      const props = PropertiesService.getScriptProperties();
+      props.setProperty('VELO_UID', json.desc_uid_retorno);
+      props.setProperty('VELO_CUSTOMER', json.idcustomer.toString());
+      props.setProperty('VELO_BROWSER', json.desc_useragent);
+
+      console.log("✅ Login realizado e cache salvo.");
+      return {
+        uid: json.desc_uid_retorno,
+        idcustomer: json.idcustomer,
+        browser: json.desc_useragent
+      };
+    } else {
+      console.error("❌ Erro de Login: " + (json.message || "Desconhecido"));
+      return null;
+    }
+  } catch (e) {
+    console.error("🚨 Erro Crítico no Login: " + e.toString());
+    return null;
+  }
+}
+
+/**
+ * --- 3. ATUALIZAR PLANILHA (LEITURA DE DADOS) ---
+ * Busca posições e verifica Fence (Cerca) e Interest Point (Ponto).
+ */
+function atualizarPainelFrota() {
+  // Tenta obter sessão. Se falhar requisição, tenta renovar login 1 vez.
+  let sessao = obterSessaoVelotrack();
+  let dadosFrota = buscarDadosAPI(sessao);
+
+  // Se falhar (ex: token expirou), força re-login e tenta de novo
+  if (!dadosFrota) {
+    console.log("⚠️ Tentando renovar sessão...");
+    sessao = obterSessaoVelotrack(true); // Força login
+    dadosFrota = buscarDadosAPI(sessao);
+  }
+
+  if (!dadosFrota) return; // Desiste se falhou 2x
+
+  // Processa os dados
+  const linhas = dadosFrota.map(moto => {
+    // A. Status de Ignição e Movimento
+    let statusIcone = "🔴";
+    let statusTexto = "Desligado";
+    
+    // Verifica conexão/ignição (tratamento para variações da API)
+    const isConnected = (moto.connected === true || moto.connected === "Sim" || moto.is_connected === true);
+    const speed = parseFloat(moto.speed || 0);
+
+    if (isConnected) {
+      statusIcone = "🟢";
+      statusTexto = speed > 0 ? `Movimento (${speed} km/h)` : "Ligado (Parado)";
+    }
+
+    // B. Lógica de Localização (Cerca OU Ponto de Interesse)
+    let localizacao = moto.address; // Padrão: Nome da Rua
+    
+    // Captura os dois campos possíveis
+    let nomeCerca = moto.fence || "";
+    let nomePonto = moto.interest_point || moto.interestpoint || "";
+    
+    // Cria uma string combinada para verificar se é Fábrica
+    // (Pode ser que esteja na cerca "Fabrica" e no ponto "Portão 1", por exemplo)
+    let localEspecial = "";
+    
+    if (nomeCerca) localEspecial = nomeCerca;
+    else if (nomePonto) localEspecial = nomePonto;
+    
+    // Se ambos existirem e forem diferentes, mostra ambos (Ex: "Fabrica - Docas")
+    if (nomeCerca && nomePonto && nomeCerca !== nomePonto) {
+        localEspecial = `${nomeCerca} - ${nomePonto}`;
+    }
+
+    if (localEspecial) {
+      // Verifica se é a Fábrica em qualquer um dos campos
+      if (localEspecial.toUpperCase().includes("FÁBRICA") || localEspecial.toUpperCase().includes("FABRICA")) {
+        localizacao = "🏭 NA FÁBRICA (Carregando/Descarregando)";
+      } else {
+        // Se for outro ponto/cerca (ex: Cliente VIP)
+        localizacao = "📍 " + localEspecial; 
+      }
+    } else {
+      // Se não estiver em nenhuma cerca nem ponto
+      localizacao = "🏍️ EM ROTA: " + (moto.address || "Endereço desconhecido");
+    }
+
+    // C. Data e Hora
+    let dataHora = moto.command_date || new Date().toLocaleString("pt-BR");
+
+    // Retorna array para a linha da planilha
+    return [
+      moto.description || moto.vehicle_code || "Moto s/ Nome", // Col A: Nome
+      statusIcone + " " + statusTexto,                         // Col B: Status
+      localizacao,                                             // Col C: Localização
+      (moto.battery_voltage_device || "-") + "V",              // Col D: Bateria
+      dataHora                                                 // Col E: Hora
+    ];
+  });
+
+  // Grava na Aba FROTA
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName("FROTA");
+  
+  // Cria aba se não existir
+  if (!sheet) {
+    sheet = ss.insertSheet("FROTA");
+    sheet.appendRow(["VEÍCULO", "STATUS", "LOCALIZAÇÃO ATUAL", "BATERIA", "ÚLT. ATUALIZAÇÃO"]);
+    sheet.getRange("A1:E1").setFontWeight("bold").setBackground("#cfe2f3");
+    sheet.setColumnWidth(1, 150); // Ajusta largura coluna Nome
+    sheet.setColumnWidth(2, 150); // Ajusta largura coluna Status
+    sheet.setColumnWidth(3, 400); // Ajusta largura coluna Localização (maior)
+  }
+
+  // Limpa dados antigos (mantendo cabeçalho)
+  if (sheet.getLastRow() > 1) {
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, 5).clearContent();
+  }
+  
+  // Escreve novos dados
+  if (linhas.length > 0) {
+    sheet.getRange(2, 1, linhas.length, 5).setValues(linhas);
+  }
+  
+  // Atualiza célula de controle (horário da última execução)
+  sheet.getRange("F1").setValue("Última varredura: " + new Date().toLocaleTimeString("pt-BR"));
+}
+
+// Função auxiliar para buscar dados (Reutilizável)
+function buscarDadosAPI(sessao) {
+  if (!sessao) return null;
+  const url = `${VELO_BASE_URL}/mobile/${sessao.idcustomer}/positionv2`;
+  const headers = { 'uid': sessao.uid, 'browser': sessao.browser };
+
+  try {
+    const response = UrlFetchApp.fetch(url, { headers: headers, muteHttpExceptions: true });
+    
+    if (response.getResponseCode() !== 200) {
+      console.log(`Erro API: ${response.getResponseCode()}`);
+      return null; // Retorna null para disparar o re-login
+    }
+
+    const json = JSON.parse(response.getContentText());
+    
+    // Normaliza retorno (algumas APIs retornam array direto, outras um objeto com 'results')
+    if (Array.isArray(json)) return json;
+    if (json.results) return json.results;
+    return [];
+
+  } catch (e) {
+    console.error("Erro no fetch: " + e.toString());
+    return null;
+  }
+}
+
+/**
+ * --- 4. FERRAMENTA: MD5 ---
+ * Essencial para o login criptografado
+ */
+function MD5(input) {
+  var rawHash = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, input, Utilities.Charset.UTF_8);
+  var txtHash = '';
+  for (var i = 0; i < rawHash.length; i++) {
+    var hashVal = rawHash[i];
+    if (hashVal < 0) hashVal += 256;
+    if (hashVal.toString(16).length == 1) txtHash += '0';
+    txtHash += hashVal.toString(16);
+  }
+  return txtHash;
+}
