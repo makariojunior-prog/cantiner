@@ -1,0 +1,473 @@
+/**
+ * ============================================================
+ * 🔗 SISTEMA DE LINK PÚBLICO - DASHBOARD CANTINA & LUMAR
+ * ============================================================
+ * Planilha: 15ygrVoRh7cd8iVWn0eBXpEz-jBVsOa4jxemmmva2rnA
+ * Aba: DASHBOARD
+ * 
+ * INSTRUÇÕES DE INSTALAÇÃO:
+ * 1. Abra a planilha DASHBOARD
+ * 2. Vá em Extensões > Apps Script
+ * 3. Cole TODO este código
+ * 4. Salve e autorize as permissões
+ * 5. Execute a função "configurarSistemaLinks" uma vez
+ * ============================================================
+ */
+
+// --- CONFIGURAÇÕES ---
+const CONFIG = {
+  // Planilha de Dados (onde está a aba FROTA com os IDs)
+  PLANILHA_DADOS_ID: '1iSYl1whBxrpanZi9sCvQoSheC63s0uUKlgHb_waUhXg',
+  
+  // Configurações da seção FROTA no DASHBOARD
+  DASHBOARD_ABA: 'DASHBOARD',
+  FROTA_LINHA_CABECALHO: 13,
+  FROTA_PRIMEIRA_LINHA_DADOS: 14,
+  FROTA_ULTIMA_LINHA_DADOS: 15,
+  
+  // Colunas (ajuste conforme seu layout atual)
+  COL_MOTO_NOME: 'D',
+  COL_GERAR_LINK: 'I',
+  COL_LINK: 'J',
+  COL_TEMPO_RESTANTE: 'K',
+  
+  // Validade do link em minutos
+  VALIDADE_MINUTOS: 30,
+  
+  // API Velotrack
+  VELO_USER: 'integracao@gmail.com',
+  VELO_PASS: '!Cantina26012019',
+  VELO_BASE_URL: 'https://track.velotrack.com.br/api/index.php'
+};
+
+// ============================================================
+// 🚀 FUNÇÃO DE CONFIGURAÇÃO INICIAL (EXECUTAR UMA VEZ)
+// ============================================================
+function configurarSistemaLinks() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(CONFIG.DASHBOARD_ABA);
+  
+  if (!sheet) {
+    SpreadsheetApp.getUi().alert('❌ Aba DASHBOARD não encontrada!');
+    return;
+  }
+  
+  // Adiciona cabeçalhos nas novas colunas
+  const linhaCabecalho = CONFIG.FROTA_LINHA_CABECALHO;
+  sheet.getRange(CONFIG.COL_GERAR_LINK + linhaCabecalho).setValue('🔗 GERAR');
+  sheet.getRange(CONFIG.COL_LINK + linhaCabecalho).setValue('LINK PÚBLICO');
+  sheet.getRange(CONFIG.COL_TEMPO_RESTANTE + linhaCabecalho).setValue('⏱️ VÁLIDO');
+  
+  // Adiciona checkboxes para cada moto
+  for (let linha = CONFIG.FROTA_PRIMEIRA_LINHA_DADOS; linha <= CONFIG.FROTA_ULTIMA_LINHA_DADOS; linha++) {
+    const cellCheckbox = sheet.getRange(CONFIG.COL_GERAR_LINK + linha);
+    cellCheckbox.insertCheckboxes();
+    cellCheckbox.setValue(false);
+    
+    // Limpa as colunas de link e tempo
+    sheet.getRange(CONFIG.COL_LINK + linha).setValue('');
+    sheet.getRange(CONFIG.COL_TEMPO_RESTANTE + linha).setValue('');
+  }
+  
+  // Formata as colunas
+  const rangeLink = sheet.getRange(
+    CONFIG.COL_LINK + CONFIG.FROTA_PRIMEIRA_LINHA_DADOS + ':' + 
+    CONFIG.COL_LINK + CONFIG.FROTA_ULTIMA_LINHA_DADOS
+  );
+  rangeLink.setFontColor('#0066cc').setFontSize(9);
+  
+  // Cria os triggers instaláveis
+  criarTriggerOnEdit();
+  criarTriggerTempo();
+  
+  SpreadsheetApp.getUi().alert(
+    '✅ Sistema configurado com sucesso!\n\n' +
+    '• Checkboxes adicionados na coluna ' + CONFIG.COL_GERAR_LINK + '\n' +
+    '• Links aparecerão na coluna ' + CONFIG.COL_LINK + '\n' +
+    '• Contador de tempo na coluna ' + CONFIG.COL_TEMPO_RESTANTE + '\n\n' +
+    'Clique no checkbox ao lado da moto para gerar o link!'
+  );
+}
+
+// ============================================================
+// 🔄 TRIGGERS (GATILHOS INSTALÁVEIS)
+// ============================================================
+function criarTriggerOnEdit() {
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'onEditInstalavel') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  ScriptApp.newTrigger('onEditInstalavel')
+    .forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet())
+    .onEdit()
+    .create();
+  
+  console.log('✅ Trigger onEditInstalavel criado');
+}
+
+function criarTriggerTempo() {
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'atualizarContadores') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  ScriptApp.newTrigger('atualizarContadores')
+    .timeBased()
+    .everyMinutes(1)
+    .create();
+  
+  console.log('✅ Trigger atualizarContadores criado');
+}
+
+// ============================================================
+// 📝 DETECTA CLIQUE NO CHECKBOX (TRIGGER INSTALÁVEL)
+// ============================================================
+function onEditInstalavel(e) {
+  if (!e) return;
+  
+  try {
+    const sheet = e.source.getActiveSheet();
+    const range = e.range;
+    
+    if (sheet.getName() !== CONFIG.DASHBOARD_ABA) return;
+    
+    const col = range.getA1Notation().replace(/[0-9]/g, '');
+    const linha = range.getRow();
+    
+    if (col !== CONFIG.COL_GERAR_LINK) return;
+    if (linha < CONFIG.FROTA_PRIMEIRA_LINHA_DADOS || linha > CONFIG.FROTA_ULTIMA_LINHA_DADOS) return;
+    
+    if (e.value === 'TRUE') {
+      gerarLinkParaLinha(linha);
+      Utilities.sleep(500);
+      range.setValue(false);
+    }
+  } catch (erro) {
+    console.error('❌ Erro no onEditInstalavel: ' + erro.message);
+    // Tenta mostrar o erro na planilha
+    try {
+      const sheet = e.source.getActiveSheet();
+      const linha = e.range.getRow();
+      sheet.getRange(CONFIG.COL_LINK + linha).setValue('❌ Erro: ' + erro.message);
+    } catch (e2) {
+      // silencioso
+    }
+  }
+}
+
+// ============================================================
+// 🔗 GERA O LINK PÚBLICO
+// ============================================================
+function gerarLinkParaLinha(linha) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheetDashboard = ss.getSheetByName(CONFIG.DASHBOARD_ABA);
+  
+  const nomeMoto = sheetDashboard.getRange(CONFIG.COL_MOTO_NOME + linha).getValue();
+  
+  console.log('🔍 Buscando moto: "' + nomeMoto + '" na linha ' + linha);
+  
+  if (!nomeMoto) {
+    sheetDashboard.getRange(CONFIG.COL_LINK + linha).setValue('❌ Moto não encontrada');
+    return;
+  }
+  
+  sheetDashboard.getRange(CONFIG.COL_LINK + linha).setValue('⏳ Gerando link...');
+  SpreadsheetApp.flush();
+  
+  const idDevice = buscarIdDevicePorNome(nomeMoto);
+  
+  console.log('🔍 ID encontrado: ' + idDevice);
+  
+  if (!idDevice) {
+    sheetDashboard.getRange(CONFIG.COL_LINK + linha).setValue('❌ ID não encontrado para: ' + nomeMoto);
+    return;
+  }
+  
+  const resultado = gerarLinkPublicoAPI(idDevice);
+  
+  if (resultado.sucesso) {
+    sheetDashboard.getRange(CONFIG.COL_LINK + linha).setValue(resultado.link);
+    
+    const props = PropertiesService.getScriptProperties();
+    const expiracoes = JSON.parse(props.getProperty('LINK_EXPIRACOES') || '{}');
+    expiracoes[linha] = new Date().getTime() + (CONFIG.VALIDADE_MINUTOS * 60 * 1000);
+    props.setProperty('LINK_EXPIRACOES', JSON.stringify(expiracoes));
+    
+    atualizarContadorLinha(sheetDashboard, linha);
+    
+  } else {
+    sheetDashboard.getRange(CONFIG.COL_LINK + linha).setValue('❌ ' + resultado.erro);
+  }
+}
+
+function buscarIdDevicePorNome(nomeMoto) {
+  try {
+    const ssDados = SpreadsheetApp.openById(CONFIG.PLANILHA_DADOS_ID);
+    const sheetFrota = ssDados.getSheetByName('FROTA');
+    
+    if (!sheetFrota) {
+      console.log('❌ Aba FROTA não encontrada na planilha de dados');
+      return null;
+    }
+    
+    const dados = sheetFrota.getDataRange().getValues();
+    
+    console.log('📋 Dados na aba FROTA:');
+    for (let i = 0; i < dados.length; i++) {
+      console.log('   Linha ' + i + ': [' + dados[i][0] + '] | ID: [' + dados[i][5] + ']');
+    }
+    
+    const nomeBuscado = nomeMoto.toString().toUpperCase().trim();
+    console.log('🔍 Procurando por: "' + nomeBuscado + '"');
+    
+    for (let i = 1; i < dados.length; i++) {
+      const nomeNaPlanilha = (dados[i][0] || '').toString().toUpperCase().trim();
+      
+      if (nomeNaPlanilha && (
+          nomeNaPlanilha.includes(nomeBuscado) || 
+          nomeBuscado.includes(nomeNaPlanilha) ||
+          nomeNaPlanilha === nomeBuscado
+      )) {
+        console.log('✅ Match encontrado: "' + nomeNaPlanilha + '" -> ID: ' + dados[i][5]);
+        return dados[i][5];
+      }
+    }
+    
+    console.log('❌ Nenhum match encontrado para: "' + nomeBuscado + '"');
+    return null;
+  } catch (e) {
+    console.log('❌ Erro ao buscar ID do device: ' + e.message);
+    return null;
+  }
+}
+
+function gerarLinkPublicoAPI(iddevice) {
+  // SEMPRE força nova autenticação para evitar sessão expirada
+  let sessao = obterSessaoVelotrack(true);
+  
+  if (!sessao) {
+    return { sucesso: false, erro: 'Falha na autenticação VeloTrack' };
+  }
+  
+  const url = `${CONFIG.VELO_BASE_URL}/customer/${sessao.idcustomer}/public-link`;
+  
+  // CORRIGIDO: usar número em string (minutos), que funcionou no teste
+  const payload = {
+    "iddevice": Number(iddevice),
+    "link": null,
+    "validtime": String(CONFIG.VALIDADE_MINUTOS)  // "30" — API interpreta como minutos
+  };
+  
+  console.log('📤 Enviando para API:');
+  console.log('   URL: ' + url);
+  console.log('   Payload: ' + JSON.stringify(payload));
+  
+  try {
+    const response = UrlFetchApp.fetch(url, {
+      'method': 'post',
+      'contentType': 'application/json',
+      'payload': JSON.stringify(payload),
+      'headers': { 
+        'uid': sessao.uid, 
+        'browser': sessao.browser 
+      },
+      'muteHttpExceptions': true
+    });
+    
+    const statusCode = response.getResponseCode();
+    const respostaTexto = response.getContentText();
+    
+    console.log('📥 Status: ' + statusCode);
+    console.log('📥 Resposta: ' + respostaTexto);
+    
+    if (statusCode !== 200) {
+      return { sucesso: false, erro: 'API retornou status ' + statusCode + ': ' + respostaTexto };
+    }
+    
+    const json = JSON.parse(respostaTexto);
+    
+    if (json.link) {
+      return { sucesso: true, link: json.link };
+    } else {
+      return { sucesso: false, erro: 'API não retornou link: ' + respostaTexto };
+    }
+  } catch (e) {
+    console.log('❌ Exceção na chamada API: ' + e.message);
+    console.log('❌ Stack: ' + e.stack);
+    return { sucesso: false, erro: 'Unexpected error: ' + url };
+  }
+}
+
+// ============================================================
+// ⏱️ SISTEMA DE CONTADOR DE TEMPO
+// ============================================================
+function atualizarContadores() {
+  try {
+    const ss = SpreadsheetApp.openById('15ygrVoRh7cd8iVWn0eBXpEz-jBVsOa4jxemmmva2rnA');
+    const sheet = ss.getSheetByName(CONFIG.DASHBOARD_ABA);
+    
+    if (!sheet) return;
+    
+    for (let linha = CONFIG.FROTA_PRIMEIRA_LINHA_DADOS; linha <= CONFIG.FROTA_ULTIMA_LINHA_DADOS; linha++) {
+      atualizarContadorLinha(sheet, linha);
+    }
+  } catch (e) {
+    console.error('Erro ao atualizar contadores: ' + e);
+  }
+}
+
+function atualizarContadorLinha(sheet, linha) {
+  const props = PropertiesService.getScriptProperties();
+  const expiracoes = JSON.parse(props.getProperty('LINK_EXPIRACOES') || '{}');
+  
+  const expiracao = expiracoes[linha];
+  const cellTempo = sheet.getRange(CONFIG.COL_TEMPO_RESTANTE + linha);
+  const cellLink = sheet.getRange(CONFIG.COL_LINK + linha);
+  
+  if (!expiracao) {
+    cellTempo.setValue('').setBackground(null);
+    return;
+  }
+  
+  const agora = new Date().getTime();
+  const restante = expiracao - agora;
+  
+  if (restante <= 0) {
+    cellTempo.setValue('⚠️ EXPIRADO').setBackground('#ffcccc').setFontColor('#cc0000');
+    cellLink.setValue('').setFontColor('#999999');
+    
+    delete expiracoes[linha];
+    props.setProperty('LINK_EXPIRACOES', JSON.stringify(expiracoes));
+    
+  } else {
+    const minutosRestantes = Math.floor(restante / 60000);
+    const segundosRestantes = Math.floor((restante % 60000) / 1000);
+    
+    const tempoFormatado = 
+      String(minutosRestantes).padStart(2, '0') + ':' + 
+      String(segundosRestantes).padStart(2, '0');
+    
+    let corFundo = '#ccffcc';
+    let corTexto = '#006600';
+    
+    if (minutosRestantes < 5) {
+      corFundo = '#ffcccc';
+      corTexto = '#cc0000';
+    } else if (minutosRestantes < 10) {
+      corFundo = '#ffffcc';
+      corTexto = '#996600';
+    }
+    
+    cellTempo.setValue('⏱️ ' + tempoFormatado).setBackground(corFundo).setFontColor(corTexto);
+  }
+}
+
+// ============================================================
+// 🔐 FUNÇÕES DE AUTENTICAÇÃO VELOTRACK
+// ============================================================
+function obterSessaoVelotrack(forcarRenovacao = false) {
+  const props = PropertiesService.getScriptProperties();
+  const cache = props.getProperties();
+
+  if (!forcarRenovacao && cache.VELO_UID && cache.VELO_CUSTOMER) {
+    return { uid: cache.VELO_UID, idcustomer: cache.VELO_CUSTOMER, browser: cache.VELO_BROWSER };
+  }
+  return realizarLoginAPI();
+}
+
+function realizarLoginAPI() {
+  const timestamp = new Date().getTime();
+  const senhaMd5 = MD5(CONFIG.VELO_PASS);
+  const stringHash = `${CONFIG.VELO_USER}:${senhaMd5}:${timestamp}`;
+  const tokenSessao = MD5(stringHash);
+
+  const payload = { 
+    "desc_uid": tokenSessao, 
+    "desc_useragent": "GoogleSheets-LinkBot", 
+    "desc_data": timestamp 
+  };
+  
+  try {
+    const response = UrlFetchApp.fetch(`${CONFIG.VELO_BASE_URL}/login`, {
+      'method': 'post', 
+      'contentType': 'application/json', 
+      'payload': JSON.stringify(payload), 
+      'muteHttpExceptions': true
+    });
+    const json = JSON.parse(response.getContentText());
+
+    if (json.desc_uid_retorno) {
+      PropertiesService.getScriptProperties().setProperties({
+        'VELO_UID': json.desc_uid_retorno,
+        'VELO_CUSTOMER': json.idcustomer.toString(),
+        'VELO_BROWSER': json.desc_useragent
+      });
+      return { uid: json.desc_uid_retorno, idcustomer: json.idcustomer, browser: json.desc_useragent };
+    }
+    console.log('❌ Login falhou: ' + response.getContentText());
+    return null;
+  } catch (e) { 
+    console.error("Erro Login: " + e); 
+    return null; 
+  }
+}
+
+function MD5(input) {
+  var rawHash = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, input, Utilities.Charset.UTF_8);
+  var txtHash = '';
+  for (var i = 0; i < rawHash.length; i++) {
+    var hashVal = rawHash[i];
+    if (hashVal < 0) hashVal += 256;
+    if (hashVal.toString(16).length == 1) txtHash += '0';
+    txtHash += hashVal.toString(16);
+  }
+  return txtHash;
+}
+
+// ============================================================
+// 🛠️ MENU E FUNÇÕES AUXILIARES
+// ============================================================
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('🔗 Links Rastreio')
+    .addItem('⚙️ Configurar Sistema', 'configurarSistemaLinks')
+    .addItem('🔄 Atualizar Contadores', 'atualizarContadores')
+    .addItem('🧹 Limpar Links Expirados', 'limparLinksExpirados')
+    .addToUi();
+}
+
+function limparLinksExpirados() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(CONFIG.DASHBOARD_ABA);
+  
+  PropertiesService.getScriptProperties().deleteProperty('LINK_EXPIRACOES');
+  
+  for (let linha = CONFIG.FROTA_PRIMEIRA_LINHA_DADOS; linha <= CONFIG.FROTA_ULTIMA_LINHA_DADOS; linha++) {
+    sheet.getRange(CONFIG.COL_LINK + linha).setValue('').setFontColor('#0066cc');
+    sheet.getRange(CONFIG.COL_TEMPO_RESTANTE + linha).setValue('').setBackground(null).setFontColor(null);
+  }
+  
+  SpreadsheetApp.getUi().alert('✅ Links limpos com sucesso!');
+}
+
+// ============================================================
+// 🧪 FUNÇÃO DE TESTE (execute para verificar se tudo funciona)
+// ============================================================
+function testarGerarLinkDireto() {
+  const idDevice = 9925960; // HONDA VERMELHA
+  
+  console.log('🧪 Testando geração de link para ID: ' + idDevice);
+  
+  const resultado = gerarLinkPublicoAPI(idDevice);
+  
+  if (resultado.sucesso) {
+    console.log('✅ SUCESSO! Link: ' + resultado.link);
+  } else {
+    console.log('❌ ERRO: ' + resultado.erro);
+  }
+}
