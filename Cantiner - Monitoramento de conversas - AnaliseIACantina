@@ -1,0 +1,535 @@
+// =================================================================================
+// AnaliseIACantina.gs - VERSÃO COMPLETA v2.2 (Fev/2026)
+// =================================================================================
+// CONEXÕES MONITORADAS:
+// 1. Cantina em Casa (WhatsApp) → Aba CANTINA_DIGISAC
+// 2. Lumar - Pedidos (WhatsApp) → Aba LUMAR_DIGISAC
+// 3. Lumar - Novos Clientes (WhatsApp) → Aba LUMAR_NOVOS
+// =================================================================================
+
+// =================================================================================
+// 1. CONFIGURAÇÕES - CANTINA EM CASA
+// =================================================================================
+const CONFIG_CANTINA = {
+  ABA: 'CANTINA_DIGISAC',
+  ABA_TREINO: 'BASE_TREINO',
+  TOKEN_DIGISAC: '9e3e2846bbd1c2837b406df2320718ad2dbb78a0',
+  SERVICE_ID: '27a84876-386b-41ed-b5f9-8aba351a30c0',
+  NUMERO_WHATSAPP: '5562981147564',
+  URL_API: 'https://cantinaemcasa.digisac.co/api/v1',
+  OPENAI_KEY: ' ',
+  MODELO_IA: 'gpt-4.1-nano',
+  ALERTAS: {
+    SUPERVISOR: ['5562981624768'],
+    LOGISTICA: ['5562993902654'],
+    NUTRICIONISTA: ['5562983381996']
+  },
+  ENTREGADORES: ['556281092106', '556292159860', '556294391877', '556282229852', '556282424071', '556294617681']
+};
+
+// =================================================================================
+// 2. CONFIGURAÇÕES - LUMAR ALIMENTOS (PEDIDOS)
+// =================================================================================
+const CONFIG_LUMAR = {
+  ABA: 'LUMAR_DIGISAC',
+  ABA_TREINO: 'BASE_TREINO',
+  TOKEN_DIGISAC: 'c337988607b38b88d3b0831a07c6ac2bb79453e4',
+  SERVICE_ID: 'f96b8e7f-636e-4bc2-b487-28de012b2236',
+  NUMERO_WHATSAPP: '5562981500971',
+  URL_API: 'https://lumar.digisac.io/api/v1',
+  OPENAI_KEY: ' ',
+  MODELO_IA: 'gpt-4.1-nano',
+  ALERTAS: {
+    SUPERVISOR: ['5562981624768'],
+    LOGISTICA: ['5562993902654'],
+    NUTRICIONISTA: ['5562983381996']
+  },
+  ENTREGADORES: ['556281092106', '556292159860', '556294391877', '556282229852', '556282424071', '556294617681', '556281147564']
+};
+
+// =================================================================================
+// 2B. CONFIGURAÇÕES - LUMAR NOVOS CLIENTES
+// =================================================================================
+const CONFIG_LUMAR_NOVOS = {
+  ABA: 'LUMAR_NOVOS',
+  ABA_TREINO: 'BASE_TREINO',
+  TOKEN_DIGISAC: 'c337988607b38b88d3b0831a07c6ac2bb79453e4',
+  SERVICE_ID: '70ca7140-c4d1-40b4-98b1-3fa918634181',
+  NUMERO_WHATSAPP: '',
+  URL_API: 'https://lumar.digisac.io/api/v1',
+  OPENAI_KEY: ' ',
+  MODELO_IA: 'gpt-4.1-nano',
+  ALERTAS: {
+    SUPERVISOR: ['5562981624768'],
+    LOGISTICA: ['5562993902654'],
+    NUTRICIONISTA: ['5562983381996']
+  },
+  ENTREGADORES: ['556281092106', '556292159860', '556294391877', '556282229852', '556282424071', '556294617681', '556281147564']
+};
+
+// =================================================================================
+// 2C. MAPA DE CORES POR CATEGORIA (fundo da linha inteira)
+// =================================================================================
+const CORES_CATEGORIAS = {
+  'RECLAMAÇÃO': '#f4cccc',  // vermelho claro
+  'QUALIDADE':  '#fce5cd',  // laranja claro
+  'LOGÍSTICA':  '#cfe2f3',  // azul claro
+  'PEDIDO':     '#d9d2e9',  // lilás claro
+  'ELOGIO':     '#d9ead3',  // verde claro
+  'EQUIPE':     '#d9d9d9'   // cinza claro
+};
+
+function aplicarCorLinha(sheet, linha, categoria) {
+  const cor = CORES_CATEGORIAS[categoria];
+  if (cor) {
+    sheet.getRange(linha, 1, 1, 11).setBackground(cor);
+  }
+}
+
+// =================================================================================
+// 3. WEBHOOK MAESTRO (DISPATCHER)
+// =================================================================================
+function doPost(e) {
+  try {
+    if (!e || !e.postData) {
+      return ContentService.createTextOutput("Sem dados").setMimeType(ContentService.MimeType.TEXT);
+    }
+    
+    const dados = JSON.parse(e.postData.contents);
+    const msg = dados.data || dados;
+    
+    // === ROTEAMENTO: 3 camadas de identificação ===
+    const serviceId = msg.serviceId || dados.serviceId || "";
+    const serviceTo = msg.to || dados.to || "";
+    const serviceNumber = serviceTo.replace(/\D/g, "");
+    
+    let configEscolhida = null;
+    let rotaOrigem = "";
+    
+    // Camada 1: serviceId (mais confiável)
+    if (serviceId === CONFIG_LUMAR.SERVICE_ID) {
+      configEscolhida = CONFIG_LUMAR;
+      rotaOrigem = "serviceId";
+    } else if (serviceId === CONFIG_LUMAR_NOVOS.SERVICE_ID) {
+      configEscolhida = CONFIG_LUMAR_NOVOS;
+      rotaOrigem = "serviceId";
+    } else if (serviceId === CONFIG_CANTINA.SERVICE_ID) {
+      configEscolhida = CONFIG_CANTINA;
+      rotaOrigem = "serviceId";
+    }
+    // Camada 2: número do WhatsApp
+    else if (serviceNumber.includes(CONFIG_LUMAR.NUMERO_WHATSAPP)) {
+      configEscolhida = CONFIG_LUMAR;
+      rotaOrigem = "numero";
+    } else if (serviceNumber.includes(CONFIG_CANTINA.NUMERO_WHATSAPP)) {
+      configEscolhida = CONFIG_CANTINA;
+      rotaOrigem = "numero";
+    }
+    // Camada 3: default com log
+    else {
+      configEscolhida = CONFIG_CANTINA;
+      rotaOrigem = "default(ID:" + serviceId + ")";
+    }
+    
+    processarEntradaMensagem(msg, dados, configEscolhida, rotaOrigem);
+    
+    return ContentService.createTextOutput("OK").setMimeType(ContentService.MimeType.TEXT);
+    
+  } catch (err) {
+    try {
+      const logSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("CANTINA_DIGISAC");
+      if (logSheet) {
+        logSheet.appendRow([new Date(), "ERRO_WEBHOOK", "", err.toString(), "", "", "ERRO", "", "", "", e ? e.postData.contents.substring(0, 500) : "sem dados"]);
+      }
+    } catch(e2) {}
+    return ContentService.createTextOutput("Erro: " + err).setMimeType(ContentService.MimeType.TEXT);
+  }
+}
+
+// =================================================================================
+// 4. PROCESSAMENTO DE MENSAGEM - EXTRAÇÃO ROBUSTA DE NOME E TELEFONE
+// =================================================================================
+function processarEntradaMensagem(msg, dadosCompletos, config, rotaOrigem) {
+  if (!msg || msg.isFromMe || (msg.type !== 'chat' && msg.type !== 'text')) return;
+  
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(config.ABA);
+  if (!sheet) return;
+  
+  const texto = msg.text || msg.body || "";
+  if (!texto.trim()) return;
+  
+  // === EXTRAÇÃO DO TELEFONE (ordem de prioridade) ===
+  let telefone = "";
+  
+  if (msg.contact && msg.contact.data && msg.contact.data.number) {
+    telefone = msg.contact.data.number;
+  } else if (msg.contact && msg.contact.number) {
+    telefone = msg.contact.number;
+  } else if (msg.chatId && msg.chatId.includes("@")) {
+    telefone = msg.chatId.split("@")[0];
+  } else if (msg.from && msg.from.includes("@")) {
+    telefone = msg.from.split("@")[0];
+  } else if (dadosCompletos.contact && dadosCompletos.contact.data && dadosCompletos.contact.data.number) {
+    telefone = dadosCompletos.contact.data.number;
+  } else if (dadosCompletos.contact && dadosCompletos.contact.number) {
+    telefone = dadosCompletos.contact.number;
+  } else if (msg.number) {
+    telefone = msg.number;
+  }
+  
+  telefone = telefone.toString().replace(/\D/g, "");
+  
+  // === EXTRAÇÃO DO NOME (ordem de prioridade) ===
+  let nome = "";
+  
+  if (msg.contact && msg.contact.name && msg.contact.name !== telefone) {
+    nome = msg.contact.name;
+  } else if (msg.pushName && msg.pushName !== telefone) {
+    nome = msg.pushName;
+  } else if (dadosCompletos.contact && dadosCompletos.contact.name && dadosCompletos.contact.name !== telefone) {
+    nome = dadosCompletos.contact.name;
+  } else if (dadosCompletos.sender && dadosCompletos.sender.name) {
+    nome = dadosCompletos.sender.name;
+  } else if (msg.contact && msg.contact.data && msg.contact.data.pushName) {
+    nome = msg.contact.data.pushName;
+  }
+  
+  if (texto.includes("👤")) {
+    const match = texto.match(/👤\s*(.+)/);
+    if (match) nome = match[1].trim();
+  }
+  
+  // === BUSCA COMPLEMENTAR VIA API (se nome ou telefone faltam) ===
+  const contactId = msg.contactId || (msg.contact && msg.contact.id) || dadosCompletos.contactId || "";
+  
+  if (contactId && (!nome || !telefone)) {
+    try {
+      const contatoAPI = buscarContatoDigisac(contactId, config);
+      if (contatoAPI) {
+        if (!nome && contatoAPI.name) nome = contatoAPI.name;
+        if (!telefone && contatoAPI.data && contatoAPI.data.number) {
+          telefone = contatoAPI.data.number.replace(/\D/g, "");
+        }
+        if (!telefone && contatoAPI.number) {
+          telefone = contatoAPI.number.replace(/\D/g, "");
+        }
+      }
+    } catch (errAPI) {}
+  }
+  
+  if (!nome) nome = telefone ? telefone : "Não Identificado";
+  if (!telefone) telefone = contactId ? "ID:" + contactId.substring(0, 12) : "Sem Número";
+  
+  // === SALVA NA PLANILHA ===
+  sheet.appendRow([
+    new Date(),           // A: Data
+    nome,                 // B: Nome
+    telefone,             // C: Telefone
+    texto,                // D: Mensagem
+    msg.type,             // E: Tipo
+    msg.id || "",         // F: ID Msg
+    "",                   // G: Status IA
+    "",                   // H: Categoria
+    "",                   // I: Resumo
+    contactId,            // J: ContactId
+    rotaOrigem            // K: Rota/Debug
+  ]);
+}
+
+// =================================================================================
+// 5. BUSCA DE CONTATO VIA API DIGISAC
+// =================================================================================
+function buscarContatoDigisac(contactId, config) {
+  if (!contactId) return null;
+  
+  const options = {
+    "method": "get",
+    "headers": {"Authorization": "Bearer " + config.TOKEN_DIGISAC},
+    "muteHttpExceptions": true
+  };
+  
+  const response = UrlFetchApp.fetch(config.URL_API + "/contacts/" + contactId, options);
+  
+  if (response.getResponseCode() === 200) {
+    return JSON.parse(response.getContentText());
+  }
+  return null;
+}
+
+// =================================================================================
+// 6. ANÁLISE DE IA (UNIFICADA) - COM CORES
+// =================================================================================
+function analisarMensagensPendentes_GERAL() {
+  executarAnaliseIndividual(CONFIG_CANTINA, "Cantina em Casa (Varejo)");
+  executarAnaliseIndividual(CONFIG_LUMAR, "Lumar Alimentos (Fábrica Atacado)");
+  executarAnaliseIndividual(CONFIG_LUMAR_NOVOS, "Lumar Alimentos (Novos Clientes)");
+}
+
+function executarAnaliseIndividual(config, contexto) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(config.ABA);
+  if (!sheet || sheet.getLastRow() < 2) return;
+  
+  const ultimaLinha = sheet.getLastRow();
+  const dados = sheet.getRange(2, 1, ultimaLinha - 1, 11).getValues();
+  const exemplosTreino = carregarTreino(config.ABA_TREINO);
+  
+  let processadas = 0;
+  const LIMITE_POR_EXECUCAO = 30;
+  
+  for (let i = 0; i < dados.length && processadas < LIMITE_POR_EXECUCAO; i++) {
+    const statusIA = dados[i][6];
+    const msgTexto = dados[i][3];
+    const telCliente = dados[i][2];
+    const nomeCliente = dados[i][1];
+    const linhaReal = i + 2;
+    
+    if (statusIA !== "" || !msgTexto || !msgTexto.toString().trim()) continue;
+    
+    if (config.ENTREGADORES.includes(telCliente.toString())) {
+      sheet.getRange(linhaReal, 7).setValue("EQUIPE");
+      aplicarCorLinha(sheet, linhaReal, "EQUIPE");
+      continue;
+    }
+    
+    try {
+      const resultado = chamarOpenAI(msgTexto, exemplosTreino, contexto, config);
+      sheet.getRange(linhaReal, 7).setValue("OK");
+      sheet.getRange(linhaReal, 8).setValue(resultado.categoria);
+      sheet.getRange(linhaReal, 9).setValue(resultado.resumo);
+      aplicarCorLinha(sheet, linhaReal, resultado.categoria);
+      processadas++;
+      
+      if (resultado.categoria === 'QUALIDADE') {
+        enviarAlerta(config.ALERTAS.NUTRICIONISTA, nomeCliente, telCliente, resultado.resumo, msgTexto, '🚨 ' + contexto + ': QUALIDADE', config);
+      } else if (resultado.categoria === 'LOGÍSTICA') {
+        enviarAlerta(config.ALERTAS.LOGISTICA, nomeCliente, telCliente, resultado.resumo, msgTexto, '🚨 ' + contexto + ': LOGÍSTICA', config);
+      } else if (resultado.categoria === 'RECLAMAÇÃO') {
+        enviarAlerta(config.ALERTAS.SUPERVISOR, nomeCliente, telCliente, resultado.resumo, msgTexto, '🚨 ' + contexto + ': RECLAMAÇÃO', config);
+      }
+      
+    } catch (e) {
+      sheet.getRange(linhaReal, 7).setValue("ERRO: " + e.toString().substring(0, 80));
+    }
+  }
+}
+
+// =================================================================================
+// 7. CHAMADA À OPENAI - gpt-4.1-nano
+// =================================================================================
+function chamarOpenAI(texto, treino, contexto, config) {
+  const prompt = 'Você é o "Cantiner", classificador de mensagens de WhatsApp para ' + contexto + '.\n\n' +
+    'CATEGORIAS VÁLIDAS: QUALIDADE, LOGÍSTICA, RECLAMAÇÃO, PEDIDO, DÚVIDA, ELOGIO, OUTROS\n\n' +
+    'REGRAS:\n' +
+    '- QUALIDADE: problemas com produto (sabor, textura, validade, embalagem danificada)\n' +
+    '- LOGÍSTICA: atraso, entrega errada, não recebeu, endereço\n' +
+    '- RECLAMAÇÃO: insatisfação geral, atendimento ruim, cobrança errada\n' +
+    '- PEDIDO: quer fazer pedido, consulta preço, cardápio\n' +
+    '- DÚVIDA: perguntas sobre funcionamento, horário, área de entrega\n' +
+    '- ELOGIO: elogio, agradecimento, feedback positivo\n' +
+    '- OUTROS: saudações simples, mensagens sem contexto claro\n\n' +
+    (treino ? 'EXEMPLOS DE REFERÊNCIA:\n' + treino + '\n\n' : '') +
+    'Responda APENAS em JSON: {"categoria": "...", "resumo": "resumo curto em até 10 palavras"}';
+  
+  const payload = {
+    "model": config.MODELO_IA,
+    "messages": [
+      {"role": "system", "content": prompt},
+      {"role": "user", "content": texto}
+    ],
+    "response_format": {"type": "json_object"},
+    "max_tokens": 60,
+    "temperature": 0.1
+  };
+  
+  const options = {
+    "method": "post",
+    "contentType": "application/json",
+    "headers": {"Authorization": "Bearer " + config.OPENAI_KEY},
+    "payload": JSON.stringify(payload),
+    "muteHttpExceptions": true
+  };
+  
+  const res = UrlFetchApp.fetch("https://api.openai.com/v1/chat/completions", options);
+  const resCode = res.getResponseCode();
+  
+  if (resCode !== 200) {
+    throw new Error("OpenAI HTTP " + resCode + ": " + res.getContentText().substring(0, 100));
+  }
+  
+  const resJson = JSON.parse(res.getContentText());
+  const conteudo = resJson.choices[0].message.content;
+  
+  try {
+    return JSON.parse(conteudo);
+  } catch (parseErr) {
+    const match = conteudo.match(/\{[\s\S]*\}/);
+    if (match) return JSON.parse(match[0]);
+    return {"categoria": "OUTROS", "resumo": "Erro ao interpretar resposta da IA"};
+  }
+}
+
+// =================================================================================
+// 8. FUNÇÕES DE SUPORTE
+// =================================================================================
+function enviarAlerta(destinatarios, cliente, tel, resumo, msgOriginal, titulo, config) {
+  const link = "https://wa.me/" + tel;
+  const texto = '*' + titulo + '*\n\n' +
+    '👤 *Cliente:* ' + cliente + '\n' +
+    '📝 *Resumo:* ' + resumo + '\n' +
+    '🔗 *Contato:* ' + link + '\n\n' +
+    '💬 *Mensagem:* ' + msgOriginal;
+  
+  destinatarios.forEach(function(num) {
+    try {
+      UrlFetchApp.fetch(config.URL_API + '/messages', {
+        "method": "post",
+        "contentType": "application/json",
+        "headers": {"Authorization": "Bearer " + config.TOKEN_DIGISAC},
+        "payload": JSON.stringify({
+          "number": num,
+          "text": texto,
+          "type": "chat",
+          "serviceId": config.SERVICE_ID
+        }),
+        "muteHttpExceptions": true
+      });
+    } catch (e) {}
+  });
+}
+
+function carregarTreino(nomeAba) {
+  const aba = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(nomeAba);
+  if (!aba || aba.getLastRow() < 2) return "";
+  const dados = aba.getRange(2, 1, Math.min(aba.getLastRow() - 1, 50), 2).getValues();
+  return dados.map(function(l) { return l[0] + " > " + l[1]; }).join("\n");
+}
+
+// =================================================================================
+// 9. MENU E GATILHOS
+// =================================================================================
+function onOpen() {
+  SpreadsheetApp.getUi().createMenu('🤖 ADMIN GERAL')
+    .addItem('▶️ Ativar/Resetar Robôs', 'configurarGatilhos_GERAL')
+    .addItem('🧠 Analisar Mensagens Agora', 'analisarMensagensPendentes_GERAL')
+    .addItem('🎨 Recolorir Histórico (todas as abas)', 'recolorirHistorico_GERAL')
+    .addItem('🔍 Testar Conexão Digisac (Cantina)', 'testarConexaoCantina')
+    .addItem('🔍 Testar Conexão Digisac (Lumar)', 'testarConexaoLumar')
+    .addToUi();
+}
+
+function configurarGatilhos_GERAL() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'analisarMensagensPendentes_GERAL') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+  ScriptApp.newTrigger('analisarMensagensPendentes_GERAL')
+    .timeBased()
+    .everyMinutes(5)
+    .create();
+  Browser.msgBox("✅ Robôs Cantina, Lumar Pedidos e Lumar Novos Clientes configurados e ativos!");
+}
+
+// =================================================================================
+// 10. RECOLORIR HISTÓRICO (mensagens já processadas)
+// =================================================================================
+function recolorirHistorico_GERAL() {
+  recolorirAba(CONFIG_CANTINA.ABA);
+  recolorirAba(CONFIG_LUMAR.ABA);
+  recolorirAba(CONFIG_LUMAR_NOVOS.ABA);
+  Browser.msgBox("✅ Histórico recolorido em todas as abas!");
+}
+
+function recolorirAba(nomeAba) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(nomeAba);
+  if (!sheet || sheet.getLastRow() < 2) return;
+  
+  const dados = sheet.getRange(2, 7, sheet.getLastRow() - 1, 2).getValues(); // G e H
+  
+  for (let i = 0; i < dados.length; i++) {
+    const status = dados[i][0];  // Coluna G
+    const categoria = dados[i][1]; // Coluna H
+    const linha = i + 2;
+    
+    if (status === "EQUIPE") {
+      aplicarCorLinha(sheet, linha, "EQUIPE");
+    } else if (status === "OK" && categoria) {
+      aplicarCorLinha(sheet, linha, categoria);
+    }
+  }
+}
+
+// =================================================================================
+// 11. FUNÇÕES DE DIAGNÓSTICO
+// =================================================================================
+function testarConexaoCantina() { testarConexao(CONFIG_CANTINA, "Cantina"); }
+function testarConexaoLumar() { testarConexao(CONFIG_LUMAR, "Lumar"); }
+
+function testarConexao(config, nome) {
+  try {
+    const res = UrlFetchApp.fetch(config.URL_API + '/services?perPage=10', {
+      "method": "get",
+      "headers": {"Authorization": "Bearer " + config.TOKEN_DIGISAC},
+      "muteHttpExceptions": true
+    });
+    
+    if (res.getResponseCode() === 200) {
+      const data = JSON.parse(res.getContentText());
+      let info = "✅ Conexão " + nome + " OK!\n\nConexões encontradas:\n";
+      
+      if (data.data && data.data.length > 0) {
+        data.data.forEach(function(srv) {
+          info += "\n• Nome: " + srv.name +
+                  "\n  ID: " + srv.id +
+                  "\n  Tipo: " + srv.type +
+                  "\n  Status: " + (srv.archivedAt ? "Arquivada" : "Ativa") + "\n";
+        });
+      } else if (Array.isArray(data)) {
+        data.forEach(function(srv) {
+          info += "\n• Nome: " + srv.name +
+                  "\n  ID: " + srv.id +
+                  "\n  Tipo: " + srv.type + "\n";
+        });
+      }
+      
+      info += "\n\n📌 SERVICE_ID configurado: " + config.SERVICE_ID;
+      info += "\nVerifique se o ID acima coincide com alguma conexão WhatsApp listada.";
+      
+      Browser.msgBox(info);
+    } else {
+      Browser.msgBox("❌ Erro HTTP " + res.getResponseCode() + "\n" + res.getContentText().substring(0, 300));
+    }
+  } catch (e) {
+    Browser.msgBox("❌ Erro: " + e.toString());
+  }
+}
+
+function diagnosticarUltimoWebhook() {
+  const configs = [
+    {config: CONFIG_CANTINA, nome: "Cantina"},
+    {config: CONFIG_LUMAR, nome: "Lumar Pedidos"},
+    {config: CONFIG_LUMAR_NOVOS, nome: "Lumar Novos"}
+  ];
+  
+  let relatorio = "=== DIAGNÓSTICO DOS ÚLTIMOS WEBHOOKS ===\n\n";
+  
+  configs.forEach(function(item) {
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(item.config.ABA);
+    if (!sheet || sheet.getLastRow() < 2) {
+      relatorio += item.nome + ": Aba vazia ou não encontrada\n\n";
+      return;
+    }
+    
+    const ultimaLinha = sheet.getLastRow();
+    const dados = sheet.getRange(ultimaLinha, 1, 1, 11).getValues()[0];
+    
+    relatorio += "📋 " + item.nome + " (última mensagem):\n";
+    relatorio += "  Data: " + dados[0] + "\n";
+    relatorio += "  Nome: " + dados[1] + "\n";
+    relatorio += "  Telefone: " + dados[2] + "\n";
+    relatorio += "  Mensagem: " + (dados[3] ? dados[3].toString().substring(0, 50) : "vazio") + "\n";
+    relatorio += "  Rota: " + dados[10] + "\n\n";
+  });
+  
+  Browser.msgBox(relatorio);
+}
