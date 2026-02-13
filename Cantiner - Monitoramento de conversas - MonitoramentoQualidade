@@ -1,0 +1,364 @@
+// =======================================================
+// CONFIGURAÇÕES - INTELIGÊNCIA DE MERCADO
+// =======================================================
+const ID_PLANILHA_INTELIGENCIA = '1mMBEBDBqp6_-hOD_kZvmX2eBHbACMCFzUsvnZPdOksw';
+const ABA_REGISTRO = 'REGISTRO_PRODUTOS';
+const ABA_CATALOGO = 'CATALOGO_PRODUTOS';
+
+// Configurações da OpenAI API
+const OPENAI_API_KEY = ''; // Substitua pela sua chave
+const OPENAI_MODEL = 'gpt-4o-mini'; // Opções: gpt-4o-mini, gpt-4o, gpt-3.5-turbo
+
+// =======================================================
+// PROCESSA MENSAGENS E EXTRAI INSIGHTS
+// =======================================================
+function processarMensagensParaInteligencia() {
+  try {
+    Logger.log('🔍 Iniciando processamento de inteligência de mercado...');
+    
+    var ssMonitoramento = SpreadsheetApp.openById('1fxNaD6uSLmdiQ5WAVno3u2XialE9SQcowkVjeirbPFY');
+    var ssInteligencia  = SpreadsheetApp.openById(ID_PLANILHA_INTELIGENCIA);
+    
+    var sheetRegistro = ssInteligencia.getSheetByName(ABA_REGISTRO);
+    var sheetCatalogo = ssInteligencia.getSheetByName(ABA_CATALOGO);
+    
+    if (!sheetRegistro || !sheetCatalogo) {
+      Logger.log('❌ Abas não encontradas. Crie REGISTRO_PRODUTOS e CATALOGO_PRODUTOS');
+      return;
+    }
+    
+    // Busca catálogo de produtos
+    var ultimaLinhaCatalogo = sheetCatalogo.getLastRow();
+    if (ultimaLinhaCatalogo < 2) {
+      Logger.log('⚠️ Catálogo vazio! Preencha a aba CATALOGO_PRODUTOS');
+      return;
+    }
+    
+    var catalogoData = sheetCatalogo.getRange(2, 1, ultimaLinhaCatalogo - 1, 3).getValues();
+    var catalogoProdutos = catalogoData.map(function(row) { 
+      return row[0].toString().toLowerCase().trim(); 
+    }).filter(function(p) { return p !== ''; });
+    
+    Logger.log('📦 Catálogo carregado: ' + catalogoProdutos.length + ' produtos');
+    
+    // Busca mensagens das 3 abas de monitoramento
+    var abasMonitoramento = ['CANTINA_DIGISAC', 'LUMAR_DIGISAC', 'LUMAR_NOVOS'];
+    var novasEntradas = [];
+    
+    // Busca IDs já processados
+    var ultimaLinhaRegistro = sheetRegistro.getLastRow();
+    var idsProcessados = {};
+    if (ultimaLinhaRegistro > 1) {
+      var registrosExistentes = sheetRegistro.getRange(2, 7, ultimaLinhaRegistro - 1, 1).getValues();
+      registrosExistentes.forEach(function(row) {
+        var msg = row[0].toString();
+        if (msg) idsProcessados[msg] = true;
+      });
+    }
+    
+    for (var a = 0; a < abasMonitoramento.length; a++) {
+      var nomeAba = abasMonitoramento[a];
+      var origem = nomeAba.includes('CANTINA') ? 'CANTINA EM CASA' : 'LUMAR ALIMENTOS';
+      
+      var sheetMonit = ssMonitoramento.getSheetByName(nomeAba);
+      if (!sheetMonit) {
+        Logger.log('⚠️ Aba ' + nomeAba + ' não encontrada');
+        continue;
+      }
+      
+      var ultimaLinha = sheetMonit.getLastRow();
+      if (ultimaLinha < 2) continue;
+      
+      // Pega últimas 50 mensagens
+      var inicio = Math.max(2, ultimaLinha - 49);
+      var dados = sheetMonit.getRange(inicio, 1, ultimaLinha - inicio + 1, 9).getValues();
+      
+      for (var i = 0; i < dados.length; i++) {
+        var data     = dados[i][0];
+        var cliente  = dados[i][1];
+        var tipo     = dados[i][7]; // Coluna H - TIPO
+        var mensagem = dados[i][8]; // Coluna I - Mensagem
+        
+        if (!mensagem || mensagem === '') continue;
+        if (idsProcessados[mensagem]) continue; // Já processado
+        
+        // Filtra apenas mensagens relevantes
+        var tipoUpper = tipo.toString().toUpperCase();
+        if (!tipoUpper.match(/RECLAMAÇÃO|QUALIDADE|PROBLEMA|DÚVIDA|PEDIDO/)) continue;
+        
+        // Classifica a mensagem
+        var analise = classificarMensagemComIA(mensagem, catalogoProdutos);
+        
+        // Filtros adicionais
+        var produtoValido = analise.produto && 
+                            analise.produto !== 'null' && 
+                            analise.produto !== '' &&
+                            analise.produto !== '(não identificado)' &&
+                            analise.produto.toLowerCase() !== 'null';
+        
+        if (analise.categoria !== 'IRRELEVANTE' && produtoValido) {
+          novasEntradas.push([
+            data,
+            origem,
+            cliente,
+            analise.categoria,
+            analise.produto,
+            analise.tipo || '',
+            mensagem,
+            '🆕 Novo',
+            ''
+          ]);
+          
+          idsProcessados[mensagem] = true;
+        }
+      }
+    }
+    
+    // Insere novos registros
+    if (novasEntradas.length > 0) {
+      var proximaLinha = sheetRegistro.getLastRow() + 1;
+      sheetRegistro.getRange(proximaLinha, 1, novasEntradas.length, 9).setValues(novasEntradas);
+      Logger.log('✅ ' + novasEntradas.length + ' novos insights registrados!');
+    } else {
+      Logger.log('✅ Nenhuma nova mensagem relevante encontrada.');
+    }
+    
+  } catch (err) {
+    Logger.log('❌ ERRO: ' + err.toString());
+    Logger.log('Stack: ' + err.stack);
+  }
+}
+
+// =======================================================
+// CLASSIFICA MENSAGEM (Versão sem IA - baseada em palavras-chave)
+// =======================================================
+function classificarMensagem(mensagem, catalogoProdutos) {
+  var msgLower = mensagem.toLowerCase();
+  
+  // Detecta categoria
+  var categoria = 'IRRELEVANTE';
+  
+  // 🔴 PROBLEMA
+  if (msgLower.match(/problema|defeito|errado|queimado|cru|duro|mole|ruim|horrível|péssimo|estragado|vencido|azedo/i)) {
+    categoria = '🔴 PROBLEMA';
+  }
+  // 🟡 PREPARO
+  else if (msgLower.match(/como prepara|como faz|como assa|temperatura|tempo de forno|quanto tempo|como cozinha|instrução|receita/i)) {
+    categoria = '🟡 PREPARO';
+  }
+  // 🟢 OPORTUNIDADE
+  else if (msgLower.match(/tem |vende |vocês tem|tem o|existe|produz|faz |gostaria de|queria|preciso de|onde encontro/i)) {
+    categoria = '🟢 OPORTUNIDADE';
+  }
+  
+  // Detecta produto mencionado
+  var produtoEncontrado = '';
+  var tipoProduto = '';
+  
+  for (var i = 0; i < catalogoProdutos.length; i++) {
+    var produtoCatalogo = catalogoProdutos[i];
+    if (msgLower.includes(produtoCatalogo)) {
+      produtoEncontrado = produtoCatalogo.toUpperCase();
+      tipoProduto = 'Catálogo Atual';
+      break;
+    }
+  }
+  
+  // Se não encontrou no catálogo, tenta extrair da mensagem
+  if (!produtoEncontrado && categoria === '🟢 OPORTUNIDADE') {
+    var match = msgLower.match(/(?:tem|vende|produz|faz)\s+([a-zà-ú\s]{3,30})(?:\?|$|\s)/i);
+    if (match) {
+      produtoEncontrado = match[1].trim().toUpperCase();
+      tipoProduto = '💡 Produto Novo';
+    }
+  }
+  
+  if (!produtoEncontrado) {
+    produtoEncontrado = '(não identificado)';
+    tipoProduto = '';
+  }
+  
+  return {
+    categoria: categoria,
+    produto: produtoEncontrado,
+    tipo: tipoProduto
+  };
+}
+
+// =======================================================
+// VERSÃO COM IA (OpenAI) - OTIMIZADA
+// =======================================================
+function classificarMensagemComIA(mensagem, catalogoProdutos) {
+  if (!OPENAI_API_KEY || OPENAI_API_KEY === 'SUA_CHAVE_OPENAI_AQUI') {
+    Logger.log('⚠️ Chave OpenAI não configurada, usando classificação por palavras-chave');
+    return classificarMensagem(mensagem, catalogoProdutos);
+  }
+  
+  var prompt = `Você é um analista de produtos para uma empresa de panificação congelada.
+
+MENSAGEM DO CLIENTE: "${mensagem}"
+
+CATÁLOGO DE PRODUTOS ATUAIS: ${catalogoProdutos.join(', ')}
+
+TAREFA: Classifique a mensagem em uma das categorias abaixo. Retorne APENAS um JSON válido.
+
+CATEGORIAS:
+
+1. 🔴 PROBLEMA
+   - Cliente reclama de defeito, qualidade ruim, produto estragado
+   - Produto veio errado, queimado, cru, duro, azedo, vencido
+   - Exemplos: "pão de queijo veio queimado", "rosca está dura"
+
+2. 🟢 OPORTUNIDADE (APENAS PRODUTOS ALIMENTÍCIOS)
+   - Cliente pergunta se vocês VENDEM/TEM/PRODUZEM um produto ESPECÍFICO
+   - Menciona nome de COMIDA/ALIMENTO que quer comprar
+   - IGNORE: perguntas sobre entrega, pagamento, horário, procedimentos
+   - Exemplos válidos: "vocês fazem pizza?", "tem pão integral?"
+   - Exemplos INVÁLIDOS: "aceitam PIX?", "fazem entrega?", "qual horário?"
+
+3. 🟡 PREPARO
+   - Cliente pergunta COMO preparar/assar/fazer um produto ESPECÍFICO
+   - Quer saber temperatura, tempo de forno, instruções
+   - Exemplos: "como assar o croissant?", "quanto tempo no forno?"
+
+4. IRRELEVANTE
+   - Perguntas sobre: pagamento, entrega, horário, localização, procedimentos
+   - Não menciona produto alimentício específico
+   - Mensagens genéricas sem foco em produto
+   - Exemplos: "aceitam cartão?", "fazem entrega?", "estão abertos?"
+
+REGRAS IMPORTANTES:
+- Se a mensagem menciona "diversos produtos", "vários itens", "tudo" SEM especificar → IRRELEVANTE
+- Se pergunta sobre PIX, cartão, boleto, pagamento → IRRELEVANTE
+- Se pergunta sobre entrega, horário, localização → IRRELEVANTE
+- Se pergunta sobre QR Code, alteração de pedido → IRRELEVANTE
+- PRODUTO deve ser o NOME ESPECÍFICO do alimento mencionado (ex: "PÃO INTEGRAL", "PIZZA")
+- Se não conseguir identificar produto específico → IRRELEVANTE
+- Se produto está no CATÁLOGO → tipo = "Catálogo Atual"
+- Se produto NÃO está no CATÁLOGO → tipo = "💡 Produto Novo"
+
+FORMATO DA RESPOSTA (JSON válido):
+{
+  "categoria": "🔴 PROBLEMA" ou "🟢 OPORTUNIDADE" ou "🟡 PREPARO" ou "IRRELEVANTE",
+  "produto": "NOME DO PRODUTO EM MAIÚSCULAS" ou "null" se não identificado,
+  "tipo": "Catálogo Atual" ou "💡 Produto Novo" ou "null"
+}`;
+
+  var options = {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { 'Authorization': 'Bearer ' + OPENAI_API_KEY },
+    payload: JSON.stringify({
+      model: OPENAI_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.2,
+      response_format: { type: "json_object" }
+    }),
+    muteHttpExceptions: true
+  };
+  
+  try {
+    var response = UrlFetchApp.fetch('https://api.openai.com/v1/chat/completions', options);
+    var json = JSON.parse(response.getContentText());
+    
+    if (json.error) {
+      Logger.log('❌ Erro da OpenAI: ' + json.error.message);
+      return classificarMensagem(mensagem, catalogoProdutos);
+    }
+    
+    var resultado = JSON.parse(json.choices[0].message.content);
+    
+    // Validação adicional
+    if (resultado.produto === 'null' || !resultado.produto || resultado.produto === '' || resultado.produto.toLowerCase() === 'null') {
+      resultado.categoria = 'IRRELEVANTE';
+      resultado.produto = '(não identificado)';
+    }
+    
+    Logger.log('✅ IA classificou: ' + resultado.categoria + ' - ' + resultado.produto);
+    return resultado;
+  } catch (err) {
+    Logger.log('⚠️ Erro na IA, usando fallback: ' + err);
+    return classificarMensagem(mensagem, catalogoProdutos);
+  }
+}
+
+// =======================================================
+// CRIAR TRIGGER - Roda a cada 10 minutos
+// =======================================================
+function criarTriggerInteligencia() {
+  // Remove triggers antigos
+  var triggers = ScriptApp.getProjectTriggers();
+  var removidos = 0;
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'processarMensagensParaInteligencia') {
+      ScriptApp.deleteTrigger(triggers[i]);
+      removidos++;
+    }
+  }
+  
+  if (removidos > 0) {
+    Logger.log('🗑️ ' + removidos + ' trigger(s) antigo(s) removido(s)');
+  }
+  
+  // Cria novo trigger
+  ScriptApp.newTrigger('processarMensagensParaInteligencia')
+    .timeBased()
+    .everyMinutes(10)
+    .create();
+  
+  Logger.log('✅ Trigger de inteligência criado! Processará mensagens a cada 10 minutos.');
+  Logger.log('📊 Modelo configurado: ' + OPENAI_MODEL);
+  Logger.log('🔑 API Key configurada: ' + (OPENAI_API_KEY !== 'SUA_CHAVE_OPENAI_AQUI' ? 'SIM ✅' : 'NÃO ❌'));
+}
+
+// =======================================================
+// TESTAR CLASSIFICAÇÃO - Para validar antes de rodar
+// =======================================================
+function testarClassificacao() {
+  Logger.log('🧪 === TESTE DE CLASSIFICAÇÃO ===');
+  
+  var catalogoTeste = ['pão de queijo', 'pão francês', 'esfiha', 'croissant', 'rosca', 'pão de batata'];
+  
+  var mensagensTeste = [
+    'O pão de queijo veio queimado e duro',
+    'Vocês vendem pão integral?',
+    'Como devo assar o croissant congelado?',
+    'Tem pizza congelada?',
+    'Aceitam PIX?',
+    'Fazem entrega no Setor Bueno?',
+    'Qual o horário de funcionamento?',
+    'A rosca está muito dura, pode trocar?',
+    'Tem diversos produtos disponíveis?'
+  ];
+  
+  for (var i = 0; i < mensagensTeste.length; i++) {
+    Logger.log('\n📝 Mensagem ' + (i + 1) + ': "' + mensagensTeste[i] + '"');
+    var resultado = classificarMensagemComIA(mensagensTeste[i], catalogoTeste);
+    Logger.log('   Categoria: ' + resultado.categoria);
+    Logger.log('   Produto: ' + resultado.produto);
+    Logger.log('   Tipo: ' + resultado.tipo);
+  }
+  
+  Logger.log('\n🏁 Teste concluído!');
+}
+
+// =======================================================
+// LIMPAR REGISTROS - Use para reprocessar tudo
+// =======================================================
+function limparRegistros() {
+  var ss = SpreadsheetApp.openById(ID_PLANILHA_INTELIGENCIA);
+  var sheet = ss.getSheetByName(ABA_REGISTRO);
+  
+  if (!sheet) {
+    Logger.log('❌ Aba REGISTRO_PRODUTOS não encontrada');
+    return;
+  }
+  
+  var ultimaLinha = sheet.getLastRow();
+  if (ultimaLinha > 1) {
+    sheet.getRange(2, 1, ultimaLinha - 1, 9).clearContent();
+    Logger.log('✅ ' + (ultimaLinha - 1) + ' registros limpos!');
+  } else {
+    Logger.log('✅ Aba já está vazia.');
+  }
+}
