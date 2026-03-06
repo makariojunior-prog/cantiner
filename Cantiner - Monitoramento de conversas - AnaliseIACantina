@@ -1,5 +1,5 @@
 // =================================================================================
-// AnaliseIACantina.gs - VERSÃO COMPLETA v2.2 (Fev/2026)
+// AnaliseIACantina.gs - VERSÃO COMPLETA v2.3 (Fev/2026)
 // =================================================================================
 // CONEXÕES MONITORADAS:
 // 1. Cantina em Casa (WhatsApp) → Aba CANTINA_DIGISAC
@@ -17,7 +17,7 @@ const CONFIG_CANTINA = {
   SERVICE_ID: '27a84876-386b-41ed-b5f9-8aba351a30c0',
   NUMERO_WHATSAPP: '5562981147564',
   URL_API: 'https://cantinaemcasa.digisac.co/api/v1',
-  OPENAI_KEY: ' ',
+  OPENAI_KEY: 'XXXXXXX',
   MODELO_IA: 'gpt-4.1-nano',
   ALERTAS: {
     SUPERVISOR: ['5562981624768'],
@@ -37,7 +37,7 @@ const CONFIG_LUMAR = {
   SERVICE_ID: 'f96b8e7f-636e-4bc2-b487-28de012b2236',
   NUMERO_WHATSAPP: '5562981500971',
   URL_API: 'https://lumar.digisac.io/api/v1',
-  OPENAI_KEY: ' ',
+  OPENAI_KEY: 'XXXXXXXXXXXXXXXXX',
   MODELO_IA: 'gpt-4.1-nano',
   ALERTAS: {
     SUPERVISOR: ['5562981624768'],
@@ -57,7 +57,7 @@ const CONFIG_LUMAR_NOVOS = {
   SERVICE_ID: '70ca7140-c4d1-40b4-98b1-3fa918634181',
   NUMERO_WHATSAPP: '',
   URL_API: 'https://lumar.digisac.io/api/v1',
-  OPENAI_KEY: ' ',
+  OPENAI_KEY: 'XXXXXXXXXXXXXXXXX',
   MODELO_IA: 'gpt-4.1-nano',
   ALERTAS: {
     SUPERVISOR: ['5562981624768'],
@@ -71,12 +71,12 @@ const CONFIG_LUMAR_NOVOS = {
 // 2C. MAPA DE CORES POR CATEGORIA (fundo da linha inteira)
 // =================================================================================
 const CORES_CATEGORIAS = {
-  'RECLAMAÇÃO': '#f4cccc',  // vermelho claro
-  'QUALIDADE':  '#fce5cd',  // laranja claro
-  'LOGÍSTICA':  '#cfe2f3',  // azul claro
-  'PEDIDO':     '#d9d2e9',  // lilás claro
-  'ELOGIO':     '#d9ead3',  // verde claro
-  'EQUIPE':     '#d9d9d9'   // cinza claro
+  'RECLAMAÇÃO': '#f4cccc',
+  'QUALIDADE':  '#fce5cd',
+  'LOGÍSTICA':  '#cfe2f3',
+  'PEDIDO':     '#d9d2e9',
+  'ELOGIO':     '#d9ead3',
+  'EQUIPE':     '#d9d9d9'
 };
 
 function aplicarCorLinha(sheet, linha, categoria) {
@@ -98,7 +98,6 @@ function doPost(e) {
     const dados = JSON.parse(e.postData.contents);
     const msg = dados.data || dados;
     
-    // === ROTEAMENTO: 3 camadas de identificação ===
     const serviceId = msg.serviceId || dados.serviceId || "";
     const serviceTo = msg.to || dados.to || "";
     const serviceNumber = serviceTo.replace(/\D/g, "");
@@ -106,7 +105,6 @@ function doPost(e) {
     let configEscolhida = null;
     let rotaOrigem = "";
     
-    // Camada 1: serviceId (mais confiável)
     if (serviceId === CONFIG_LUMAR.SERVICE_ID) {
       configEscolhida = CONFIG_LUMAR;
       rotaOrigem = "serviceId";
@@ -116,17 +114,13 @@ function doPost(e) {
     } else if (serviceId === CONFIG_CANTINA.SERVICE_ID) {
       configEscolhida = CONFIG_CANTINA;
       rotaOrigem = "serviceId";
-    }
-    // Camada 2: número do WhatsApp
-    else if (serviceNumber.includes(CONFIG_LUMAR.NUMERO_WHATSAPP)) {
+    } else if (serviceNumber.includes(CONFIG_LUMAR.NUMERO_WHATSAPP)) {
       configEscolhida = CONFIG_LUMAR;
       rotaOrigem = "numero";
     } else if (serviceNumber.includes(CONFIG_CANTINA.NUMERO_WHATSAPP)) {
       configEscolhida = CONFIG_CANTINA;
       rotaOrigem = "numero";
-    }
-    // Camada 3: default com log
-    else {
+    } else {
       configEscolhida = CONFIG_CANTINA;
       rotaOrigem = "default(ID:" + serviceId + ")";
     }
@@ -147,7 +141,7 @@ function doPost(e) {
 }
 
 // =================================================================================
-// 4. PROCESSAMENTO DE MENSAGEM - EXTRAÇÃO ROBUSTA DE NOME E TELEFONE
+// 4. PROCESSAMENTO DE MENSAGEM
 // =================================================================================
 function processarEntradaMensagem(msg, dadosCompletos, config, rotaOrigem) {
   if (!msg || msg.isFromMe || (msg.type !== 'chat' && msg.type !== 'text')) return;
@@ -158,7 +152,6 @@ function processarEntradaMensagem(msg, dadosCompletos, config, rotaOrigem) {
   const texto = msg.text || msg.body || "";
   if (!texto.trim()) return;
   
-  // === EXTRAÇÃO DO TELEFONE (ordem de prioridade) ===
   let telefone = "";
   
   if (msg.contact && msg.contact.data && msg.contact.data.number) {
@@ -179,7 +172,6 @@ function processarEntradaMensagem(msg, dadosCompletos, config, rotaOrigem) {
   
   telefone = telefone.toString().replace(/\D/g, "");
   
-  // === EXTRAÇÃO DO NOME (ordem de prioridade) ===
   let nome = "";
   
   if (msg.contact && msg.contact.name && msg.contact.name !== telefone) {
@@ -199,7 +191,6 @@ function processarEntradaMensagem(msg, dadosCompletos, config, rotaOrigem) {
     if (match) nome = match[1].trim();
   }
   
-  // === BUSCA COMPLEMENTAR VIA API (se nome ou telefone faltam) ===
   const contactId = msg.contactId || (msg.contact && msg.contact.id) || dadosCompletos.contactId || "";
   
   if (contactId && (!nome || !telefone)) {
@@ -220,19 +211,18 @@ function processarEntradaMensagem(msg, dadosCompletos, config, rotaOrigem) {
   if (!nome) nome = telefone ? telefone : "Não Identificado";
   if (!telefone) telefone = contactId ? "ID:" + contactId.substring(0, 12) : "Sem Número";
   
-  // === SALVA NA PLANILHA ===
   sheet.appendRow([
-    new Date(),           // A: Data
-    nome,                 // B: Nome
-    telefone,             // C: Telefone
-    texto,                // D: Mensagem
-    msg.type,             // E: Tipo
-    msg.id || "",         // F: ID Msg
-    "",                   // G: Status IA
-    "",                   // H: Categoria
-    "",                   // I: Resumo
-    contactId,            // J: ContactId
-    rotaOrigem            // K: Rota/Debug
+    new Date(),
+    nome,
+    telefone,
+    texto,
+    msg.type,
+    msg.id || "",
+    "",
+    "",
+    "",
+    contactId,
+    rotaOrigem
   ]);
 }
 
@@ -412,22 +402,35 @@ function onOpen() {
     .addItem('▶️ Ativar/Resetar Robôs', 'configurarGatilhos_GERAL')
     .addItem('🧠 Analisar Mensagens Agora', 'analisarMensagensPendentes_GERAL')
     .addItem('🎨 Recolorir Histórico (todas as abas)', 'recolorirHistorico_GERAL')
+    .addItem('📦 Arquivar Mensagens Agora (Manual)', 'arquivarMensagens_GERAL')  // ← NOVO
     .addItem('🔍 Testar Conexão Digisac (Cantina)', 'testarConexaoCantina')
     .addItem('🔍 Testar Conexão Digisac (Lumar)', 'testarConexaoLumar')
     .addToUi();
 }
 
 function configurarGatilhos_GERAL() {
+  // Remove gatilhos existentes conhecidos
   ScriptApp.getProjectTriggers().forEach(function(t) {
-    if (t.getHandlerFunction() === 'analisarMensagensPendentes_GERAL') {
+    const fn = t.getHandlerFunction();
+    if (fn === 'analisarMensagensPendentes_GERAL' || fn === 'arquivarMensagens_GERAL') {
       ScriptApp.deleteTrigger(t);
     }
   });
+
+  // Gatilho de análise IA: a cada 5 minutos
   ScriptApp.newTrigger('analisarMensagensPendentes_GERAL')
     .timeBased()
     .everyMinutes(5)
     .create();
-  Browser.msgBox("✅ Robôs Cantina, Lumar Pedidos e Lumar Novos Clientes configurados e ativos!");
+
+  // ← NOVO: Gatilho de arquivamento: todo dia às 3h da manhã
+  ScriptApp.newTrigger('arquivarMensagens_GERAL')
+    .timeBased()
+    .atHour(3)
+    .everyDays(1)
+    .create();
+
+  Browser.msgBox("✅ Robôs configurados!\n\n• Análise IA: a cada 5 minutos\n• Arquivamento automático: todos os dias às 3h");
 }
 
 // =================================================================================
@@ -444,11 +447,11 @@ function recolorirAba(nomeAba) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(nomeAba);
   if (!sheet || sheet.getLastRow() < 2) return;
   
-  const dados = sheet.getRange(2, 7, sheet.getLastRow() - 1, 2).getValues(); // G e H
+  const dados = sheet.getRange(2, 7, sheet.getLastRow() - 1, 2).getValues();
   
   for (let i = 0; i < dados.length; i++) {
-    const status = dados[i][0];  // Coluna G
-    const categoria = dados[i][1]; // Coluna H
+    const status = dados[i][0];
+    const categoria = dados[i][1];
     const linha = i + 2;
     
     if (status === "EQUIPE") {
@@ -532,4 +535,148 @@ function diagnosticarUltimoWebhook() {
   });
   
   Browser.msgBox(relatorio);
+}
+
+// =================================================================================
+// 12. ARQUIVAMENTO AUTOMÁTICO - MENSAGENS COM MAIS DE 30 DIAS
+// =================================================================================
+
+const ID_PLANILHA_HISTORICO = '1iSYl1whBxrpanZi9sCvQoSheC63s0uUKlgHb_waUhXg';
+
+const MAPA_ARQUIVAMENTO = [
+  { origem: 'CANTINA_DIGISAC', destino: 'HIST_CANTINA_DIGISAC' },
+  { origem: 'LUMAR_DIGISAC',   destino: 'HIST_LUMAR_DIGISAC'   },
+  { origem: 'LUMAR_NOVOS',     destino: 'HIST_LUMAR_NOVOS'     }
+];
+
+const DIAS_RETENCAO     = 30;
+const LOTE_ARQUIVAMENTO = 500; // ← Voltou para 500 para não estourar o timeout de 6min
+
+// ----- Ponto de entrada geral (gatilho diário + menu manual) -----
+function arquivarMensagens_GERAL() {
+  const planilhaHistorico = SpreadsheetApp.openById(ID_PLANILHA_HISTORICO);
+  const planilhaAtiva     = SpreadsheetApp.getActiveSpreadsheet();
+  const corte             = new Date();
+  corte.setDate(corte.getDate() - DIAS_RETENCAO);
+
+  let totalArquivadas = 0;
+
+  MAPA_ARQUIVAMENTO.forEach(function(mapa) {
+    try {
+      const arquivadas = arquivarAba(planilhaAtiva, planilhaHistorico, mapa.origem, mapa.destino, corte);
+      totalArquivadas += arquivadas;
+      console.log('✅ ' + mapa.origem + ': ' + arquivadas + ' mensagens arquivadas.');
+    } catch (err) {
+      console.error('❌ Erro em ' + mapa.origem + ': ' + err.toString());
+      try {
+        const abaErro = planilhaAtiva.getSheetByName(mapa.origem);
+        if (abaErro) {
+          abaErro.appendRow([
+            new Date(), 'ERRO_ARQUIVAMENTO', '', err.toString(),
+            '', '', 'ERRO', '', '', '', 'arquivamento'
+          ]);
+        }
+      } catch(e2) {}
+    }
+  });
+
+  // Log final
+  try {
+    const abaLog = planilhaAtiva.getSheetByName('CANTINA_DIGISAC');
+    if (abaLog) {
+      abaLog.appendRow([
+        new Date(), 'LOG_ARQUIVAMENTO', '',
+        'Arquivamento concluído: ' + totalArquivadas + ' mensagens movidas para o histórico.',
+        '', '', 'LOG', '', '', '', 'arquivamento'
+      ]);
+    }
+  } catch(e) {}
+
+  console.log('🎉 Total arquivado: ' + totalArquivadas + ' mensagens.');
+}
+
+// ----- Funções individuais por aba (úteis para diagnóstico e agendamento separado) -----
+function arquivarMensagens_CANTINA() {
+  _arquivarAbaIndividual('CANTINA_DIGISAC', 'HIST_CANTINA_DIGISAC');
+}
+function arquivarMensagens_LUMAR() {
+  _arquivarAbaIndividual('LUMAR_DIGISAC', 'HIST_LUMAR_DIGISAC');
+}
+function arquivarMensagens_LUMAR_NOVOS() {
+  _arquivarAbaIndividual('LUMAR_NOVOS', 'HIST_LUMAR_NOVOS');
+}
+
+function _arquivarAbaIndividual(nomeOrigem, nomeDestino) {
+  const planilhaHistorico = SpreadsheetApp.openById(ID_PLANILHA_HISTORICO);
+  const planilhaAtiva     = SpreadsheetApp.getActiveSpreadsheet();
+  const corte             = new Date();
+  corte.setDate(corte.getDate() - DIAS_RETENCAO);
+
+  const arquivadas = arquivarAba(planilhaAtiva, planilhaHistorico, nomeOrigem, nomeDestino, corte);
+  console.log('✅ ' + nomeOrigem + ': ' + arquivadas + ' mensagens arquivadas.');
+}
+
+// ----- Motor de arquivamento (processa no máximo LOTE_ARQUIVAMENTO linhas por vez) -----
+function arquivarAba(planilhaOrigem, planilhaDestino, nomeOrigem, nomeDestino, dataCorte) {
+  const abaOrigem  = planilhaOrigem.getSheetByName(nomeOrigem);
+  const abaDestino = planilhaDestino.getSheetByName(nomeDestino);
+
+  if (!abaOrigem || !abaDestino) {
+    console.warn('⚠️ Aba não encontrada: ' + nomeOrigem + ' ou ' + nomeDestino);
+    return 0;
+  }
+
+  const ultimaLinha = abaOrigem.getLastRow();
+  if (ultimaLinha < 2) return 0;
+
+  const totalDados = ultimaLinha - 1;
+  const dados = abaOrigem.getRange(2, 1, totalDados, 11).getValues();
+
+  const linhasParaArquivar = [];
+  let loteContador = 0;
+
+  for (let i = 0; i < dados.length && loteContador < LOTE_ARQUIVAMENTO; i++) {
+    const dataCell = dados[i][0];
+    if (!dataCell || !(dataCell instanceof Date)) continue;
+
+    if (dataCell < dataCorte) {
+      linhasParaArquivar.push({
+        indiceSheet: i + 2,
+        valores: dados[i]
+      });
+      loteContador++;
+    }
+  }
+
+  if (linhasParaArquivar.length === 0) return 0;
+
+  // ETAPA 1: Copia para o histórico em bloco
+  const valoresParaCopiar    = linhasParaArquivar.map(function(l) { return l.valores; });
+  const proximaLinhaDestino  = abaDestino.getLastRow() + 1;
+  abaDestino
+    .getRange(proximaLinhaDestino, 1, valoresParaCopiar.length, 11)
+    .setValues(valoresParaCopiar);
+
+  // ETAPA 2: Deleta da origem de baixo para cima, agrupando linhas contíguas
+  const indicesSheet = linhasParaArquivar
+    .map(function(l) { return l.indiceSheet; })
+    .sort(function(a, b) { return b - a; });
+
+  let i = 0;
+  while (i < indicesSheet.length) {
+    let inicio    = indicesSheet[i];
+    let quantidade = 1;
+
+    while (
+      i + quantidade < indicesSheet.length &&
+      indicesSheet[i + quantidade] === inicio - quantidade
+    ) {
+      quantidade++;
+    }
+
+    abaOrigem.deleteRows(inicio - quantidade + 1, quantidade);
+    i += quantidade;
+  }
+
+  return linhasParaArquivar.length;
 }
