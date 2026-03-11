@@ -1,0 +1,545 @@
+/**
+ * ============================================================
+ * AUTOMAÇÃO LUMAR — LEMBRETES DE PEDIDO VIA WHATSAPP
+ * Arquivo  : LumarEnvioAutomatico.gs
+ * Planilha : Comercial / Cantina (ID hardcoded)
+ * Versão   : 1.3 — Inclui testeEnvioReal()
+ * ============================================================
+ */
+
+// ============================================================
+// CONFIGURAÇÕES
+// ============================================================
+
+const SS_ID = '15ygrVoRh7cd8iVWn0eBXpEz-jBVsOa4jxemmmva2rnA';
+
+const CFG = {
+  // --- DIGISAC ---
+  DIGISAC_TOKEN     : '1dda1ed59020930edd0660fa547a8262636737b5',
+  DIGISAC_SERVICE_ID: 'f96b8e7f-636e-4bc2-b487-28de012b2236',
+  DIGISAC_BASE_URL  : 'https://lumar.digisac.io',
+
+  // Número para testes
+  NUMERO_TESTE      : '5562981624768',
+
+  // --- ABAS ---
+  ABA_CLIENTES : 'CLIENTES LUMAR',
+  ABA_CONFIG   : 'CONFIG-LUMAR',
+  ABA_LOG      : 'LOG-ENVIOS',
+
+  // --- COLUNAS DE CLIENTES LUMAR (índice 0-based) ---
+  COL_CLIENTE      : 1,   // B = CLIENTE
+  COL_TELEFONE     : 3,   // D = TELEFONE
+  COL_DIA_ENTREGA  : 9,   // J = DIA DA ENTREGA
+  COL_MENSAGEM     : 10,  // K = MENSAGEM (SIM/NÃO)
+
+  // --- CADÊNCIA DE ENVIO ---
+  MSGS_POR_MINUTO  : 2,   // 2 msg/min → 103 clientes terminam em ~52 min
+  PAUSA_ENTRE_MSGS : 8000 // 8 segundos entre as 2 mensagens do mesmo lote
+};
+
+// Dias da semana em PT-BR (igual ao que aparece em CLIENTES LUMAR)
+const DIAS_PT = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
+
+
+// ============================================================
+// FASE 2 — TESTE DA API DIGISAC
+// ============================================================
+
+function testarAPIDigisac() {
+  const ss       = SpreadsheetApp.openById(SS_ID);
+  const mensagem = '🧪 *Teste Lumar Alimentos*\n\nIntegração Apps Script → Digisac funcionando!\n' +
+                   new Date().toLocaleString('pt-BR');
+
+  Logger.log('Enviando mensagem de teste para: ' + CFG.NUMERO_TESTE);
+  const resultado = _enviarMensagemDigisac(CFG.NUMERO_TESTE, mensagem);
+  Logger.log('Resultado: ' + JSON.stringify(resultado));
+
+  _registrarLog(ss, 'TESTE API', CFG.NUMERO_TESTE, mensagem,
+    resultado.sucesso ? '✅ ENVIADO' : '❌ ERRO: ' + resultado.erro);
+
+  if (resultado.sucesso) {
+    SpreadsheetApp.getUi().alert(
+      '✅ Sucesso!\n\nMensagem de teste enviada para ' + CFG.NUMERO_TESTE +
+      '.\nConfira o celular e o LOG-ENVIOS.'
+    );
+  } else {
+    SpreadsheetApp.getUi().alert(
+      '❌ Erro ao enviar:\n\n' + resultado.erro +
+      '\n\nDicas:\n• HTTP 401 = token inválido\n• HTTP 404 = URL errada\n• HTTP 422 = serviceId inválido ou número malformado'
+    );
+  }
+}
+
+
+// ============================================================
+// FASE 3 — SIMULAÇÃO SECA (DRY RUN)
+// ============================================================
+
+function simularEnvioLumar() {
+  const ss       = SpreadsheetApp.openById(SS_ID);
+  const clientes = _obterClientesDoDia(ss);
+  const diaHoje  = DIAS_PT[new Date().getDay()];
+
+  Logger.log('=== SIMULAÇÃO DRY RUN — ' + new Date().toLocaleDateString('pt-BR') + ' ===');
+
+  if (clientes.length === 0) {
+    SpreadsheetApp.getUi().alert(
+      'Simulação concluída!\n\n' +
+      'Nenhum cliente com MENSAGEM = SIM agendado para hoje (' + diaHoje + ').\n\n' +
+      'Verifique se a coluna K de CLIENTES LUMAR está preenchida com "SIM"\n' +
+      'e se hoje (' + diaHoje + ') está na coluna J do cliente.'
+    );
+    return;
+  }
+
+  const minEstimados = Math.ceil(clientes.length / CFG.MSGS_POR_MINUTO);
+
+  Logger.log('Total que receberiam mensagem: ' + clientes.length);
+  clientes.forEach((c, i) => {
+    const msg = _montarMensagem(ss, c.cliente);
+    Logger.log((i + 1) + '. ' + c.cliente + ' | ' + c.telefone);
+    _registrarLog(ss, c.cliente, c.telefone, msg, '🔵 SIMULADO (não enviado)');
+  });
+
+  SpreadsheetApp.getUi().alert(
+    'Simulação concluída! (' + diaHoje + ')\n\n' +
+    clientes.length + ' cliente(s) receberiam mensagem.\n' +
+    'Tempo estimado de envio: ~' + minEstimados + ' minutos\n' +
+    '(iniciando às 06h00 → termina por volta das ' + _calcularHoraFim(6, 0, minEstimados) + ')\n\n' +
+    clientes.map((c, i) => (i + 1) + '. ' + c.cliente + '  |  ' + c.telefone).join('\n') +
+    '\n\nResultados registrados em LOG-ENVIOS.\nConfira se a lista bate com o Dashboard-L!'
+  );
+}
+
+
+// ============================================================
+// FASE 4 — TESTE REAL COM CLIENTES ESPECÍFICOS
+// ============================================================
+
+/**
+ * Busca clientes pelo nome em CLIENTES LUMAR e envia a mensagem real.
+ * Altere a lista "buscas" para testar outros clientes.
+ * REMOVA esta função após concluir todos os testes.
+ */
+function testeEnvioReal() {
+  const ss    = SpreadsheetApp.openById(SS_ID);
+  const aba   = ss.getSheetByName(CFG.ABA_CLIENTES);
+  const dados = aba.getDataRange().getValues();
+
+  // ← Altere aqui para buscar outros clientes
+  const buscas = ['MARTA ANTONIA'];
+
+  const destinatarios = [];
+
+  for (let i = 1; i < dados.length; i++) {
+    const nome     = String(dados[i][CFG.COL_CLIENTE]  || '').trim();
+    const telBruto = String(dados[i][CFG.COL_TELEFONE] || '').trim();
+
+    if (!nome || !telBruto) continue;
+
+    const match = buscas.find(b => nome.toUpperCase().includes(b.toUpperCase()));
+    if (!match) continue;
+
+    const telefone = _normalizarTelefone(telBruto);
+    if (!telefone) {
+      Logger.log('⚠️ Telefone inválido: ' + nome + ' → ' + telBruto);
+      continue;
+    }
+
+    destinatarios.push({ nome, telefone });
+  }
+
+  if (destinatarios.length === 0) {
+    SpreadsheetApp.getUi().alert(
+      '❌ Nenhum cliente encontrado com os termos: ' + buscas.join(', ') +
+      '\n\nVerifique o nome exato em CLIENTES LUMAR.'
+    );
+    return;
+  }
+
+  // Lê mensagem de CONFIG-LUMAR C2
+  const abaConfig = ss.getSheetByName(CFG.ABA_CONFIG);
+  const mensagem  = abaConfig
+    ? String(abaConfig.getRange('C2').getValue()).trim()
+    : null;
+
+  if (!mensagem) {
+    SpreadsheetApp.getUi().alert(
+      '❌ Mensagem não encontrada na célula C2 de CONFIG-LUMAR.\n' +
+      'Cole a mensagem padrão antes de testar.'
+    );
+    return;
+  }
+
+  Logger.log('=== TESTE REAL — ' + new Date().toLocaleString('pt-BR') + ' ===');
+  Logger.log('Clientes encontrados: ' + destinatarios.map(d => d.nome).join(' | '));
+  Logger.log('Mensagem:\n' + mensagem);
+
+  destinatarios.forEach((d, i) => {
+    Logger.log('Enviando para ' + d.nome + ' (' + d.telefone + ')...');
+    const resultado = _enviarMensagemDigisac(d.telefone, mensagem);
+
+    _registrarLog(ss, d.nome, d.telefone, mensagem,
+      resultado.sucesso ? '✅ ENVIADO (TESTE REAL)' : '❌ ERRO: ' + resultado.erro);
+
+    Logger.log(resultado.sucesso ? '✅ OK' : '❌ FALHA: ' + resultado.erro);
+
+    if (i < destinatarios.length - 1) Utilities.sleep(8000);
+  });
+
+  SpreadsheetApp.getUi().alert(
+    'Teste concluído!\n\n' +
+    destinatarios.map(d => '• ' + d.nome + '\n  ' + d.telefone).join('\n\n') +
+    '\n\nConfira o celular dela e o LOG-ENVIOS.'
+  );
+}
+
+
+// ============================================================
+// FASE 5 — AUTOMAÇÃO COMPLETA
+// ============================================================
+
+function iniciarEnvioLumar() {
+  const ss      = SpreadsheetApp.openById(SS_ID);
+  const hoje    = new Date();
+  const props   = PropertiesService.getScriptProperties();
+  const hojeStr = Utilities.formatDate(hoje, 'America/Sao_Paulo', 'yyyy-MM-dd');
+
+  const diaSemana = hoje.getDay();
+  if (diaSemana === 0 || diaSemana === 6) {
+    Logger.log('Fim de semana — envio não executado.');
+    return;
+  }
+
+  if (_ehFeriado(ss, hoje)) {
+    Logger.log('Feriado — envio não executado.');
+    _registrarLog(ss, 'SISTEMA', '-', '-', '⚠️ Não executado: feriado');
+    return;
+  }
+
+  if (props.getProperty('LUMAR_DATA_EXEC') === hojeStr) {
+    Logger.log('Já executado hoje (' + hojeStr + ') — abortando para evitar duplicatas.');
+    return;
+  }
+
+  const clientes = _obterClientesDoDia(ss);
+
+  if (clientes.length === 0) {
+    Logger.log('Nenhum cliente para contatar hoje.');
+    _registrarLog(ss, 'SISTEMA', '-', '-',
+      'ℹ️ Nenhum cliente agendado para ' + DIAS_PT[diaSemana]);
+    props.setProperty('LUMAR_DATA_EXEC', hojeStr);
+    return;
+  }
+
+  const minEstimados = Math.ceil(clientes.length / CFG.MSGS_POR_MINUTO);
+  Logger.log('Iniciando fila: ' + clientes.length + ' cliente(s). Estimativa: ~' + minEstimados + ' min.');
+
+  props.setProperty('LUMAR_FILA',       JSON.stringify(clientes));
+  props.setProperty('LUMAR_FILA_INDEX', '0');
+  props.setProperty('LUMAR_DATA_EXEC',  hojeStr);
+
+  _criarTriggerRecorrente();
+
+  _registrarLog(ss, 'SISTEMA', '-', '-',
+    '🚀 Fila iniciada: ' + clientes.length + ' cliente(s) | ' +
+    DIAS_PT[diaSemana] + ' | Previsão de término: ' +
+    _calcularHoraFim(6, 0, minEstimados));
+
+  Logger.log('Fila criada. Primeiro lote em até 1 minuto.');
+}
+
+
+function enviarProximaMensagemLumar() {
+  const props    = PropertiesService.getScriptProperties();
+  const filaJson = props.getProperty('LUMAR_FILA');
+
+  if (!filaJson) {
+    Logger.log('Fila não encontrada — removendo trigger recorrente.');
+    _removerTriggerRecorrente();
+    return;
+  }
+
+  const fila  = JSON.parse(filaJson);
+  const index = parseInt(props.getProperty('LUMAR_FILA_INDEX') || '0', 10);
+
+  if (index >= fila.length) {
+    Logger.log('✅ Fila concluída (' + fila.length + ' msg) — removendo trigger.');
+    const ss = SpreadsheetApp.openById(SS_ID);
+    _registrarLog(ss, 'SISTEMA', '-', '-',
+      '✅ Todos os envios concluídos: ' + fila.length + ' mensagem(ns)');
+    props.deleteProperty('LUMAR_FILA');
+    props.deleteProperty('LUMAR_FILA_INDEX');
+    _removerTriggerRecorrente();
+    return;
+  }
+
+  const ss  = SpreadsheetApp.openById(SS_ID);
+  const ate = Math.min(index + CFG.MSGS_POR_MINUTO, fila.length);
+
+  for (let i = index; i < ate; i++) {
+    const cliente  = fila[i];
+    Logger.log('Enviando ' + (i + 1) + '/' + fila.length + ': ' + cliente.cliente);
+
+    const mensagem  = _montarMensagem(ss, cliente.cliente);
+    const resultado = _enviarMensagemDigisac(cliente.telefone, mensagem);
+
+    _registrarLog(
+      ss, cliente.cliente, cliente.telefone, mensagem,
+      resultado.sucesso
+        ? '✅ ENVIADO (' + (i + 1) + '/' + fila.length + ')'
+        : '❌ ERRO: ' + resultado.erro
+    );
+
+    Logger.log(resultado.sucesso ? 'OK' : 'FALHA: ' + resultado.erro);
+
+    if (i < ate - 1) Utilities.sleep(CFG.PAUSA_ENTRE_MSGS);
+  }
+
+  props.setProperty('LUMAR_FILA_INDEX', String(ate));
+  Logger.log('Lote enviado (' + ate + '/' + fila.length + '). Próximo em 1 minuto.');
+}
+
+
+// ============================================================
+// FUNÇÕES INTERNAS
+// ============================================================
+
+function _obterClientesDoDia(ss) {
+  const aba       = ss.getSheetByName(CFG.ABA_CLIENTES);
+  const dados     = aba.getDataRange().getValues();
+  const diaHoje   = DIAS_PT[new Date().getDay()];
+  const resultado = [];
+
+  for (let i = 1; i < dados.length; i++) {
+    const linha           = dados[i];
+    const cliente         = String(linha[CFG.COL_CLIENTE]    || '').trim();
+    const telefoneBruto   = String(linha[CFG.COL_TELEFONE]   || '').trim();
+    const diasEntrega     = String(linha[CFG.COL_DIA_ENTREGA]|| '').trim();
+    const precisaMensagem = String(linha[CFG.COL_MENSAGEM]   || '').trim().toUpperCase();
+
+    if (!cliente || !telefoneBruto)  continue;
+    if (precisaMensagem !== 'SIM')   continue;
+
+    const diasArray    = diasEntrega.split(',').map(d => d.trim().toLowerCase());
+    const diaHojeLower = diaHoje.toLowerCase();
+    if (!diasArray.some(d => d.includes(diaHojeLower))) continue;
+
+    const telefone = _normalizarTelefone(telefoneBruto);
+    if (!telefone) {
+      Logger.log('⚠️ Telefone inválido ignorado: ' + cliente + ' → "' + telefoneBruto + '"');
+      continue;
+    }
+
+    resultado.push({ cliente, telefone });
+  }
+
+  return resultado;
+}
+
+
+function _normalizarTelefone(tel) {
+  const digitos = String(tel).replace(/\D/g, '');
+  if (digitos.length < 10) return null;
+  if (digitos.startsWith('55') && digitos.length >= 12) return digitos;
+  if (digitos.length === 10 || digitos.length === 11)   return '55' + digitos;
+  return null;
+}
+
+
+function _montarMensagem(ss, nomeCliente) {
+  const primeiroNome = String(nomeCliente).split(/[\s\-\/]/)[0];
+
+  try {
+    const abaConfig = ss.getSheetByName(CFG.ABA_CONFIG);
+    if (abaConfig) {
+      const template = String(abaConfig.getRange('C2').getValue()).trim();
+      if (template) return template.replace(/\{CLIENTE\}/gi, primeiroNome);
+    }
+  } catch (e) {
+    Logger.log('Aviso: template não encontrado em CONFIG-LUMAR. Usando mensagem padrão.');
+  }
+
+  return (
+    'Bom dia! ☀️\nTudo bem?\n\n' +
+    '🚛 *Estamos organizando nossa próxima rota de entrega!*\n\n' +
+    '⏰ Poderia nos enviar seu pedido com _*antecedência*_?\n\n' +
+    '❗Pedidos serão aceitos *até às 07h30*. _*Pedidos realizados após esse horário serão entregues na próxima rota*_❗\n\n\n' +
+    '🤖 Esta é uma mensagem automática. Se já tiver feito o seu pedido, desconsidere esta mensagem por favor. 🙏'
+  );
+}
+
+
+function _ehFeriado(ss, data) {
+  try {
+    const abaConfig = ss.getSheetByName(CFG.ABA_CONFIG);
+    if (!abaConfig) return false;
+
+    const feriados = abaConfig.getRange('A2:A50').getValues().flat();
+    const dataStr  = Utilities.formatDate(data, 'America/Sao_Paulo', 'dd/MM/yyyy');
+
+    return feriados.some(f => {
+      if (!f) return false;
+      const fStr = f instanceof Date
+        ? Utilities.formatDate(f, 'America/Sao_Paulo', 'dd/MM/yyyy')
+        : String(f).trim();
+      return fStr === dataStr;
+    });
+  } catch (e) {
+    Logger.log('Erro ao verificar feriado: ' + e);
+    return false;
+  }
+}
+
+
+function _enviarMensagemDigisac(telefone, mensagem) {
+  try {
+    const url = CFG.DIGISAC_BASE_URL + '/api/v1/messages';
+
+    const payload = {
+      text          : mensagem,
+      number        : telefone,
+      serviceId     : CFG.DIGISAC_SERVICE_ID,
+      origin        : 'bot',
+      dontOpenticket: true
+    };
+
+    const options = {
+      method            : 'POST',
+      contentType       : 'application/json',
+      headers           : { 'Authorization': 'Bearer ' + CFG.DIGISAC_TOKEN },
+      payload           : JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+
+    const response = UrlFetchApp.fetch(url, options);
+    const code     = response.getResponseCode();
+    const body     = response.getContentText();
+
+    Logger.log('Digisac HTTP ' + code + ' | Tel: ' + telefone + ' | Resp: ' + body.substring(0, 200));
+
+    if (code >= 200 && code < 300) {
+      return { sucesso: true, erro: null };
+    } else {
+      return { sucesso: false, erro: 'HTTP ' + code + ' — ' + body.substring(0, 300) };
+    }
+
+  } catch (e) {
+    return { sucesso: false, erro: e.toString() };
+  }
+}
+
+
+function _registrarLog(ss, cliente, telefone, mensagem, status) {
+  try {
+    let abaLog = ss.getSheetByName(CFG.ABA_LOG);
+    if (!abaLog) {
+      abaLog = ss.insertSheet(CFG.ABA_LOG);
+      const h = abaLog.getRange('A1:F1');
+      h.setValues([['DATA', 'HORÁRIO', 'CLIENTE', 'TELEFONE', 'MENSAGEM', 'STATUS']]);
+      h.setFontWeight('bold');
+      h.setBackground('#F3F3F3');
+    }
+
+    const agora   = new Date();
+    const data    = Utilities.formatDate(agora, 'America/Sao_Paulo', 'dd/MM/yyyy');
+    const horario = Utilities.formatDate(agora, 'America/Sao_Paulo', 'HH:mm:ss');
+
+    abaLog.appendRow([data, horario, cliente, telefone, mensagem, status]);
+  } catch (e) {
+    Logger.log('Erro no LOG: ' + e);
+  }
+}
+
+
+function _calcularHoraFim(horaInicio, minInicio, duracaoMin) {
+  const totalMin = horaInicio * 60 + minInicio + duracaoMin;
+  const h        = Math.floor(totalMin / 60) % 24;
+  const m        = totalMin % 60;
+  return String(h).padStart(2, '0') + 'h' + String(m).padStart(2, '0');
+}
+
+
+// ============================================================
+// GERENCIAMENTO DE TRIGGERS
+// ============================================================
+
+function _criarTriggerRecorrente() {
+  _removerTriggerRecorrente();
+  const trigger = ScriptApp.newTrigger('enviarProximaMensagemLumar')
+    .timeBased()
+    .everyMinutes(1)
+    .create();
+  PropertiesService.getScriptProperties()
+    .setProperty('LUMAR_TRIGGER_ID', trigger.getUniqueId());
+  Logger.log('Trigger recorrente criado (1 min). ID: ' + trigger.getUniqueId());
+}
+
+function _removerTriggerRecorrente() {
+  ScriptApp.getProjectTriggers().forEach(t => {
+    if (t.getHandlerFunction() === 'enviarProximaMensagemLumar') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+  PropertiesService.getScriptProperties().deleteProperty('LUMAR_TRIGGER_ID');
+}
+
+
+// ============================================================
+// UTILITÁRIOS — EXECUTAR MANUALMENTE
+// ============================================================
+
+function instalarTrigger06h() {
+  ScriptApp.getProjectTriggers().forEach(t => {
+    if (t.getHandlerFunction() === 'iniciarEnvioLumar') ScriptApp.deleteTrigger(t);
+  });
+
+  ScriptApp.newTrigger('iniciarEnvioLumar')
+    .timeBased()
+    .atHour(6)
+    .everyDays(1)
+    .inTimezone('America/Sao_Paulo')
+    .create();
+
+  Logger.log('✅ Trigger 06h00 instalado!');
+  SpreadsheetApp.getUi().alert(
+    '✅ Trigger das 06h00 instalado!\n\n' +
+    'A partir de amanhã a automação vai rodar todo dia útil às 06h00,\n' +
+    'exceto feriados cadastrados em CONFIG-LUMAR coluna A.\n\n' +
+    'Cadência: ' + CFG.MSGS_POR_MINUTO + ' mensagens/minuto.'
+  );
+}
+
+function removerTodosTriggers() {
+  ScriptApp.getProjectTriggers().forEach(t => ScriptApp.deleteTrigger(t));
+  PropertiesService.getScriptProperties().deleteAllProperties();
+  Logger.log('⛔ Todos os triggers removidos e fila limpa.');
+  SpreadsheetApp.getUi().alert(
+    '⛔ Automação desativada.\n\nTodos os triggers e a fila foram removidos.'
+  );
+}
+
+function diagnosticarEstado() {
+  const props    = PropertiesService.getScriptProperties().getAll();
+  const triggers = ScriptApp.getProjectTriggers();
+  const fila     = props.LUMAR_FILA ? JSON.parse(props.LUMAR_FILA) : [];
+  const idx      = parseInt(props.LUMAR_FILA_INDEX || '0', 10);
+
+  Logger.log('=== DIAGNÓSTICO ===');
+  Logger.log('Triggers: ' + triggers.length);
+  triggers.forEach(t => Logger.log('  ' + t.getHandlerFunction() + ' | ' + t.getUniqueId()));
+  Logger.log('Properties: ' + JSON.stringify(props, null, 2));
+
+  SpreadsheetApp.getUi().alert(
+    '📊 ESTADO DA AUTOMAÇÃO LUMAR\n\n' +
+    'Triggers ativos: ' + triggers.length + '\n' +
+    triggers.map(t => '  • ' + t.getHandlerFunction()).join('\n') + '\n\n' +
+    'Fila atual: ' + fila.length + ' cliente(s)\n' +
+    'Próximo a enviar: ' + (fila.length > 0
+      ? 'posição ' + (idx + 1) + '/' + fila.length
+      : 'fila vazia') + '\n' +
+    'Última execução: ' + (props.LUMAR_DATA_EXEC || 'nunca') + '\n\n' +
+    'Cadência configurada: ' + CFG.MSGS_POR_MINUTO + ' msg/min'
+  );
+}
